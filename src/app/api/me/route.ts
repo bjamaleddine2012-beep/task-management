@@ -9,17 +9,22 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Hardcoded admin email
+  const ADMIN_EMAIL = "bjamaleddine2012@gmail.com";
+  const isAdmin = decoded.email === ADMIN_EMAIL;
+
   const userRef = adminDb.collection("users").doc(decoded.uid);
   const userDoc = await userRef.get();
 
   if (userDoc.exists) {
-    await userRef.update({ lastLoginAt: new Date().toISOString() });
-    return NextResponse.json({ uid: decoded.uid, ...userDoc.data() });
+    const updateData: Record<string, string> = { lastLoginAt: new Date().toISOString() };
+    // Always ensure admin email has admin role
+    if (isAdmin && userDoc.data()?.role !== "admin") {
+      updateData.role = "admin";
+    }
+    await userRef.update(updateData);
+    return NextResponse.json({ uid: decoded.uid, ...userDoc.data(), ...updateData });
   }
-
-  // Hardcoded admin email
-  const ADMIN_EMAIL = "bjamaleddine2012@gmail.com";
-  const isAdmin = decoded.email === ADMIN_EMAIL;
 
   const newProfile: UserProfile = {
     uid: decoded.uid,
