@@ -17,16 +17,16 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ uid: decoded.uid, ...userDoc.data() });
   }
 
-  // First-time login — check if any users exist to determine role
-  const usersSnapshot = await adminDb.collection("users").limit(1).get();
-  const isFirstUser = usersSnapshot.empty;
+  // Hardcoded admin email
+  const ADMIN_EMAIL = "bjamaleddine2012@gmail.com";
+  const isAdmin = decoded.email === ADMIN_EMAIL;
 
   const newProfile: UserProfile = {
     uid: decoded.uid,
     email: decoded.email || "",
     displayName: decoded.name || decoded.email || "",
     photoURL: decoded.picture || null,
-    role: isFirstUser ? "admin" : "user",
+    role: isAdmin ? "admin" : "user",
     createdAt: new Date().toISOString(),
     lastLoginAt: new Date().toISOString(),
   };
