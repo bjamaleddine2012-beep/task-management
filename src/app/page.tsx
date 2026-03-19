@@ -8,6 +8,7 @@ import TaskList from "@/components/TaskList";
 import TaskCreateForm from "@/components/TaskCreateForm";
 import TaskDetailModal from "@/components/TaskDetailModal";
 import { Task } from "@/lib/types";
+import Link from "next/link";
 
 export default function HomePage() {
   return (
@@ -67,6 +68,14 @@ function TaskDashboard() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          {isAdmin && (
+            <Link
+              href="/admin"
+              className="px-4 py-2 bg-gray-800 text-white rounded-lg text-sm font-medium hover:bg-gray-900 transition-colors"
+            >
+              Admin Panel
+            </Link>
+          )}
           {isAdmin && (
             <button
               onClick={() => setShowCreateForm(true)}
