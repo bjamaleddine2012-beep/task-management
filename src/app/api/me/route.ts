@@ -4,7 +4,13 @@ import { adminDb } from "@/lib/firebase-admin";
 import { UserProfile } from "@/lib/types";
 
 export async function GET(request: NextRequest) {
-  const decoded = await verifyAuthToken(request);
+  let decoded;
+  try {
+    decoded = await verifyAuthToken(request);
+  } catch (err) {
+    console.error("Auth error:", err);
+    return NextResponse.json({ error: "Auth failed", details: String(err) }, { status: 401 });
+  }
   if (!decoded) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
