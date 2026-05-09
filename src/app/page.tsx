@@ -1,125 +1,256 @@
-"use client";
-
-import { useEffect, useState, useCallback } from "react";
-import { useAuth } from "@/contexts/AuthContext";
-import AuthGuard from "@/components/AuthGuard";
-import TaskStatsCards from "@/components/TaskStatsCards";
-import TaskList from "@/components/TaskList";
-import TaskCreateForm from "@/components/TaskCreateForm";
-import TaskDetailModal from "@/components/TaskDetailModal";
-import { Task } from "@/lib/types";
+import * as React from "react";
 import Link from "next/link";
+import { redirect } from "next/navigation";
+import { LogOut, ShieldCheck } from "lucide-react";
+import type { TaskPriority, TaskStatus } from "@prisma/client";
 
-export default function HomePage() {
+import { auth, signOut } from "@/auth";
+import { prisma } from "@/lib/prisma";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { TaskStatusForm } from "./_components/task-status-form";
+
+export const dynamic = "force-dynamic";
+
+const PRIORITY_VARIANT: Record<
+  TaskPriority,
+  "destructive" | "warning" | "secondary"
+> = {
+  HIGH: "destructive",
+  MEDIUM: "warning",
+  LOW: "secondary",
+};
+
+const STATUS_LABEL: Record<TaskStatus, string> = {
+  PENDING: "Pending",
+  IN_PROGRESS: "In progress",
+  COMPLETED: "Done",
+};
+
+export default async function DashboardPage() {
+  const session = await auth();
+  if (!session?.user) redirect("/login");
+
+  const tasks = await prisma.task.findMany({
+    where: { assignedToId: session.user.id },
+    orderBy: [{ status: "asc" }, { dueDate: "asc" }],
+    select: {
+      id: true,
+      title: true,
+      description: true,
+      dueDate: true,
+      priority: true,
+      status: true,
+      createdBy: { select: { name: true, email: true } },
+    },
+  });
+
+  const now = new Date();
+  const soon = new Date(now);
+  soon.setDate(soon.getDate() + 3);
+
+  const open = tasks.filter((t) => t.status !== "COMPLETED");
+  const done = tasks.filter((t) => t.status === "COMPLETED");
+  const overdue = open.filter((t) => t.dueDate < now);
+  const dueSoon = open.filter(
+    (t) => t.dueDate >= now && t.dueDate <= soon,
+  );
+
   return (
-    <AuthGuard>
-      <TaskDashboard />
-    </AuthGuard>
+    <div className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
+      <header className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">My tasks</h1>
+          <p className="text-sm text-muted-foreground">
+            Hi {session.user.name ?? session.user.email}, you have{" "}
+            <span className="font-medium text-foreground">{open.length}</span>{" "}
+            open task{open.length === 1 ? "" : "s"}.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {session.user.role === "ADMIN" && (
+            <Button asChild variant="outline" size="sm">
+              <Link href="/admin">
+                <ShieldCheck className="mr-1 h-4 w-4" />
+                Admin
+              </Link>
+            </Button>
+          )}
+          <form
+            action={async () => {
+              "use server";
+              await signOut({ redirectTo: "/login" });
+            }}
+          >
+            <Button type="submit" variant="ghost" size="sm">
+              <LogOut className="mr-1 h-4 w-4" />
+              Sign out
+            </Button>
+          </form>
+        </div>
+      </header>
+
+      {(overdue.length > 0 || dueSoon.length > 0) && (
+        <div className="mb-6 grid gap-4 sm:grid-cols-2">
+          {overdue.length > 0 && (
+            <Card className="border-destructive/40 bg-destructive/5">
+              <CardHeader className="pb-2">
+                <CardDescription className="text-destructive">
+                  Overdue
+                </CardDescription>
+                <CardTitle className="text-3xl text-destructive">
+                  {overdue.length}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm text-destructive/80">
+                Past due date — please complete or update.
+              </CardContent>
+            </Card>
+          )}
+          {dueSoon.length > 0 && (
+            <Card className="border-amber-300/60 bg-amber-50 dark:bg-amber-950/20">
+              <CardHeader className="pb-2">
+                <CardDescription className="text-amber-800 dark:text-amber-300">
+                  Due in the next 3 days
+                </CardDescription>
+                <CardTitle className="text-3xl text-amber-900 dark:text-amber-200">
+                  {dueSoon.length}
+                </CardTitle>
+              </CardHeader>
+            </Card>
+          )}
+        </div>
+      )}
+
+      <Section title="Open" empty="No open tasks. You're caught up.">
+        {open.map((task) => (
+          <TaskRow
+            key={task.id}
+            task={task}
+            now={now}
+            soonCutoff={soon}
+            highlight={
+              task.dueDate < now
+                ? "overdue"
+                : task.dueDate <= soon
+                  ? "soon"
+                  : null
+            }
+          />
+        ))}
+      </Section>
+
+      {done.length > 0 && (
+        <Section title="Completed">
+          {done.map((task) => (
+            <TaskRow key={task.id} task={task} now={now} soonCutoff={soon} />
+          ))}
+        </Section>
+      )}
+    </div>
   );
 }
 
-function TaskDashboard() {
-  const { user, userProfile, signOut } = useAuth();
-  const isAdmin = userProfile?.role === "admin";
-
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [showCreateForm, setShowCreateForm] = useState(false);
-  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-
-  const fetchTasks = useCallback(async () => {
-    if (!user) return;
-    try {
-      const token = await user.getIdToken();
-      const res = await fetch("/api/tasks", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        setTasks(await res.json());
-      }
-    } catch (err) {
-      console.error("Failed to fetch tasks:", err);
-    } finally {
-      setLoading(false);
-    }
-  }, [user]);
-
-  useEffect(() => {
-    fetchTasks();
-  }, [fetchTasks]);
-
-  const handleTaskUpdated = async () => {
-    await fetchTasks();
-    if (selectedTask) {
-      const updated = tasks.find((t) => t.id === selectedTask.id);
-      if (updated) setSelectedTask(updated);
-    }
-  };
-
+function Section({
+  title,
+  empty,
+  children,
+}: {
+  title: string;
+  empty?: string;
+  children: React.ReactNode;
+}) {
+  const items = React.Children.toArray(children);
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Task Management</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Welcome, {userProfile?.displayName}
-            {isAdmin && <span className="ml-2 bg-blue-100 text-blue-700 text-xs px-2 py-0.5 rounded-full">Admin</span>}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          {isAdmin && (
-            <Link
-              href="/admin"
-              className="px-4 py-2 bg-gray-800 text-white rounded-lg text-sm font-medium hover:bg-gray-900 transition-colors"
-            >
-              Admin Panel
-            </Link>
-          )}
-          {isAdmin && (
-            <button
-              onClick={() => setShowCreateForm(true)}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
-            >
-              + Create Task
-            </button>
-          )}
-          <button
-            onClick={signOut}
-            className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-          >
-            Sign Out
-          </button>
-        </div>
-      </div>
-
-      {/* Stats */}
-      <TaskStatsCards tasks={tasks} />
-
-      {/* Task List */}
-      {loading ? (
-        <div className="flex items-center justify-center py-12">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
+    <section className="mb-8">
+      <h2 className="mb-3 text-sm font-medium text-muted-foreground">
+        {title}
+      </h2>
+      {items.length === 0 && empty ? (
+        <div className="rounded-lg border bg-background p-8 text-center text-sm text-muted-foreground">
+          {empty}
         </div>
       ) : (
-        <TaskList tasks={tasks} onTaskClick={setSelectedTask} />
+        <div className="space-y-2">{children}</div>
       )}
+    </section>
+  );
+}
 
-      {/* Modals */}
-      {showCreateForm && (
-        <TaskCreateForm
-          onClose={() => setShowCreateForm(false)}
-          onCreated={fetchTasks}
-        />
-      )}
+type TaskRowData = {
+  id: string;
+  title: string;
+  description: string | null;
+  dueDate: Date;
+  priority: TaskPriority;
+  status: TaskStatus;
+  createdBy: { name: string | null; email: string };
+};
 
-      {selectedTask && (
-        <TaskDetailModal
-          task={selectedTask}
-          onClose={() => setSelectedTask(null)}
-          onUpdated={handleTaskUpdated}
-        />
-      )}
-    </div>
+function TaskRow({
+  task,
+  highlight,
+}: {
+  task: TaskRowData;
+  now: Date;
+  soonCutoff: Date;
+  highlight?: "overdue" | "soon" | null;
+}) {
+  return (
+    <Card
+      className={
+        highlight === "overdue"
+          ? "border-destructive/40"
+          : highlight === "soon"
+            ? "border-amber-300/60"
+            : ""
+      }
+    >
+      <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex-1 space-y-1">
+          <div className="flex items-center gap-2">
+            <h3 className="font-medium">{task.title}</h3>
+            <Badge variant={PRIORITY_VARIANT[task.priority]}>
+              {task.priority}
+            </Badge>
+          </div>
+          {task.description && (
+            <p className="text-sm text-muted-foreground">{task.description}</p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Due{" "}
+            <span
+              className={
+                highlight === "overdue"
+                  ? "font-medium text-destructive"
+                  : highlight === "soon"
+                    ? "font-medium text-amber-700 dark:text-amber-300"
+                    : ""
+              }
+            >
+              {task.dueDate.toLocaleDateString(undefined, {
+                weekday: "short",
+                month: "short",
+                day: "numeric",
+              })}
+            </span>{" "}
+            · from {task.createdBy.name ?? task.createdBy.email}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 sm:flex-col sm:items-end">
+          <span className="text-xs text-muted-foreground">
+            {STATUS_LABEL[task.status]}
+          </span>
+          <TaskStatusForm taskId={task.id} status={task.status} />
+        </div>
+      </CardContent>
+    </Card>
   );
 }
