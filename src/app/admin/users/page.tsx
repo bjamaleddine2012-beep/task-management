@@ -23,10 +23,19 @@ export default async function UsersPage() {
     },
   });
 
+  // Format the date on the server with an explicit locale so the client
+  // doesn't re-format with a different locale and trip a hydration mismatch.
+  const dateFmt = new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+
   // Don't ship the hash to the client — just whether one exists.
-  const safeUsers = users.map(({ passwordHash, ...u }) => ({
+  const safeUsers = users.map(({ passwordHash, createdAt, ...u }) => ({
     ...u,
     hasPassword: !!passwordHash,
+    createdAtFormatted: dateFmt.format(createdAt),
   }));
 
   return (

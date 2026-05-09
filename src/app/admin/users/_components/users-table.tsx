@@ -45,7 +45,7 @@ export type AdminUserRow = {
   email: string;
   role: Role;
   image: string | null;
-  createdAt: Date;
+  createdAtFormatted: string;
   hasPassword: boolean;
   _count: { assignedTasks: number };
 };
@@ -117,7 +117,7 @@ export function UsersTable({
                     {u.hasPassword ? "Email + password" : "Google only"}
                   </TableCell>
                   <TableCell className="hidden text-xs text-muted-foreground md:table-cell">
-                    {u.createdAt.toLocaleDateString()}
+                    {u.createdAtFormatted}
                   </TableCell>
                   <TableCell className="text-right">
                     <RowMenu
