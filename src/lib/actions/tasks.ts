@@ -2,7 +2,6 @@
 
 import { revalidatePath } from "next/cache";
 import type { Session } from "next-auth";
-import { put } from "@vercel/blob";
 
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
@@ -217,16 +216,11 @@ export async function setMyTaskStatusAction(
   return { ok: true };
 }
 
-// ─── User: upload proof image and submit for admin review ──────────────────
-
-const MAX_PROOF_BYTES = 8 * 1024 * 1024; // 8 MB
-const ALLOWED_PROOF_TYPES = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/heic",
-  "image/heif",
-]);
+// ─── User: register proof image (already uploaded directly to Blob) ────────
+//
+// The browser uploads the file directly to Vercel Blob via /api/blob/upload
+// (bypasses the 4.5 MB serverless function body limit). Then it calls this
+// action with just the resulting URL. We re-check ownership here.
 
 export async function submitProofAction(
   _prev: TaskActionState,
@@ -235,39 +229,28 @@ export async function submitProofAction(
   const gate = await requireSession();
   if (!gate.ok) return { ok: false, error: gate.error };
 
-  const parsed = submitProofSchema.safeParse({ id: formData.get("id") });
-  if (!parsed.success) return { ok: false, error: "Invalid task." };
-
-  const file = formData.get("photo");
-  if (!(file instanceof File) || file.size === 0) {
+  const parsed = submitProofSchema.safeParse({
+    id: formData.get("id"),
+    proofUrl: formData.get("proofUrl"),
+  });
+  if (!parsed.success) {
     return {
       ok: false,
-      error: "Pick a photo of the completed work.",
-      fieldErrors: { photo: ["A photo is required"] },
-    };
-  }
-  if (!ALLOWED_PROOF_TYPES.has(file.type)) {
-    return {
-      ok: false,
-      error: "Photo must be a JPEG, PNG, WebP, or HEIC.",
-      fieldErrors: { photo: ["Unsupported file type"] },
-    };
-  }
-  if (file.size > MAX_PROOF_BYTES) {
-    return {
-      ok: false,
-      error: "Photo is too large (8 MB max).",
-      fieldErrors: { photo: ["Too large"] },
+      error: parsed.error.issues[0]?.message ?? "Invalid input.",
+      fieldErrors: parsed.error.issues.reduce<Record<string, string[]>>(
+        (acc, issue) => {
+          const key = issue.path.join(".") || "_root";
+          (acc[key] ??= []).push(issue.message);
+          return acc;
+        },
+        {},
+      ),
     };
   }
 
   const task = await prisma.task.findUnique({
     where: { id: parsed.data.id },
-    select: {
-      id: true,
-      assignedToId: true,
-      status: true,
-    },
+    select: { id: true, assignedToId: true, status: true },
   });
   if (!task) return { ok: false, error: "Task not found." };
   if (task.assignedToId !== gate.session.user.id) {
@@ -277,32 +260,11 @@ export async function submitProofAction(
     return { ok: false, error: "This task is already completed." };
   }
 
-  // Upload to Vercel Blob. Filename is namespaced per-task so re-submissions
-  // don't collide.
-  const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
-  const key = `task-proofs/${task.id}/${Date.now()}.${ext}`;
-
-  let blobUrl: string;
-  try {
-    const blob = await put(key, file, {
-      access: "public",
-      addRandomSuffix: false,
-    });
-    blobUrl = blob.url;
-  } catch (err) {
-    console.error("[submitProofAction] blob upload failed:", err);
-    return {
-      ok: false,
-      error:
-        "Couldn't upload the photo. The Blob store may not be configured yet.",
-    };
-  }
-
   await prisma.task.update({
     where: { id: task.id },
     data: {
       status: "SUBMITTED",
-      proofImageUrl: blobUrl,
+      proofImageUrl: parsed.data.proofUrl,
       proofSubmittedAt: new Date(),
       // Clear any previous review on resubmit.
       reviewedAt: null,

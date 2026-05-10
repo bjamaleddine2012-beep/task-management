@@ -14,6 +14,9 @@ export default nextAuth.auth;
 
 export const config = {
   matcher: [
-    "/((?!api/auth|_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico)$).*)",
+    // `api/blob/upload` is excluded too — Vercel's blob service calls it
+    // server-to-server with a signed payload (no session cookie), and the
+    // route handler does its own auth check on the token-issuance step.
+    "/((?!api/auth|api/blob/upload|_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico)$).*)",
   ],
 };

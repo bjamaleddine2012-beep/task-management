@@ -59,9 +59,20 @@ export const updateTaskSchema = z.object({
 });
 
 // User submits proof for review. Status moves to SUBMITTED.
-// Allowed only when current status is IN_PROGRESS or REJECTED.
+// Allowed only when current status is PENDING / IN_PROGRESS / REJECTED.
+//
+// `proofUrl` is the URL returned by Vercel Blob after a client-direct
+// upload. The server validates the host so we don't accidentally save
+// arbitrary external URLs.
 export const submitProofSchema = z.object({
   id: z.string().min(1),
+  proofUrl: z
+    .string()
+    .url("Upload didn't complete — try again")
+    .refine(
+      (u) => /\.public\.blob\.vercel-storage\.com\//.test(u),
+      "Invalid upload URL",
+    ),
 });
 
 // Admin approves submitted proof → COMPLETED.
