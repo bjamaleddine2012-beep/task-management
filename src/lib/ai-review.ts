@@ -119,10 +119,14 @@ async function reviewWithGemini(
 ): Promise<AiVerdict | null> {
   const client = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
   const model = client.getGenerativeModel({
-    model: "gemini-2.0-flash-exp",
+    // gemini-2.5-flash is the current stable vision-capable model on the
+    // free tier. (`gemini-2.0-flash-exp` was retired.) The 2.5-series uses
+    // hidden "thinking" tokens — give a generous output budget so the
+    // actual JSON reply isn't truncated.
+    model: "gemini-2.5-flash",
     generationConfig: {
       responseMimeType: "application/json",
-      maxOutputTokens: 200,
+      maxOutputTokens: 1024,
     },
   });
 
