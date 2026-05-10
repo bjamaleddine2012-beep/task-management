@@ -70,7 +70,19 @@ export default {
 
       const isOnLogin = path.startsWith("/login");
       const isOnAdmin = path.startsWith("/admin");
-      const isPublic = isOnLogin || path === "/favicon.ico";
+
+      // Public assets. The matcher SHOULD already exclude these but treat it
+      // as defense-in-depth — the negative lookahead can be brittle, and we
+      // don't want the manifest or icons to redirect to /login (would break
+      // PWA install).
+      const isPublicAsset =
+        path === "/manifest.json" ||
+        path === "/sw.js" ||
+        path === "/favicon.ico" ||
+        path === "/robots.txt" ||
+        /\.(?:png|jpg|jpeg|gif|webp|svg|ico)$/.test(path);
+
+      if (isPublicAsset) return true;
 
       if (isOnLogin) {
         if (isLoggedIn) {
@@ -81,7 +93,6 @@ export default {
       }
 
       if (!isLoggedIn) {
-        if (isPublic) return true;
         const url = new URL("/login", nextUrl);
         url.searchParams.set("callbackUrl", path);
         return Response.redirect(url);
