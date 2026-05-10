@@ -1,4 +1,4 @@
-import type { NextAuthConfig, Provider } from "next-auth";
+import type { NextAuthConfig } from "next-auth";
 import Google from "next-auth/providers/google";
 import type { Role } from "@prisma/client";
 
@@ -12,6 +12,10 @@ import type { Role } from "@prisma/client";
 // env vars in local dev don't crash the auth route.
 const googleEnabled =
   !!process.env.AUTH_GOOGLE_ID && !!process.env.AUTH_GOOGLE_SECRET;
+
+// `Provider` isn't a public export from "next-auth"; derive it from the
+// config type so we don't depend on internals.
+type Provider = NonNullable<NextAuthConfig["providers"]>[number];
 
 const providers: Provider[] = googleEnabled
   ? [

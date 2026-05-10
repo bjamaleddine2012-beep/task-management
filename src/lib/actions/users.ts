@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import type { Session } from "next-auth";
 import { Prisma } from "@prisma/client";
 import bcrypt from "bcryptjs";
 
@@ -20,15 +21,17 @@ export type ActionState =
   | { ok: false; error: string; fieldErrors?: Record<string, string[]> }
   | null;
 
-async function requireAdmin() {
+type AdminGate =
+  | { ok: false; error: string }
+  | { ok: true; session: Session };
+
+async function requireAdmin(): Promise<AdminGate> {
   const session = await auth();
-  if (!session?.user) {
-    return { error: "Not authenticated" as const };
-  }
+  if (!session?.user) return { ok: false, error: "Not authenticated" };
   if (session.user.role !== "ADMIN") {
-    return { error: "Admin access required" as const };
+    return { ok: false, error: "Admin access required" };
   }
-  return { session };
+  return { ok: true, session };
 }
 
 function flattenZodErrors<T extends Record<string, unknown>>(
@@ -49,7 +52,7 @@ export async function createUserAction(
   formData: FormData,
 ): Promise<ActionState> {
   const gate = await requireAdmin();
-  if ("error" in gate) return { ok: false, error: gate.error };
+  if (!gate.ok) return { ok: false, error: gate.error };
 
   const parsed = createUserSchema.safeParse({
     name: formData.get("name"),
@@ -98,7 +101,7 @@ export async function updateUserAction(
   formData: FormData,
 ): Promise<ActionState> {
   const gate = await requireAdmin();
-  if ("error" in gate) return { ok: false, error: gate.error };
+  if (!gate.ok) return { ok: false, error: gate.error };
 
   const parsed = updateUserSchema.safeParse({
     id: formData.get("id"),
@@ -152,7 +155,7 @@ export async function resetPasswordAction(
   formData: FormData,
 ): Promise<ActionState> {
   const gate = await requireAdmin();
-  if ("error" in gate) return { ok: false, error: gate.error };
+  if (!gate.ok) return { ok: false, error: gate.error };
 
   const parsed = resetPasswordSchema.safeParse({
     id: formData.get("id"),
@@ -184,7 +187,7 @@ export async function deleteUserAction(
   formData: FormData,
 ): Promise<ActionState> {
   const gate = await requireAdmin();
-  if ("error" in gate) return { ok: false, error: gate.error };
+  if (!gate.ok) return { ok: false, error: gate.error };
 
   const parsed = deleteUserSchema.safeParse({ id: formData.get("id") });
   if (!parsed.success) {

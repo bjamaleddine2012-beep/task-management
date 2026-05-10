@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import type { Session } from "next-auth";
 
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
@@ -16,19 +17,26 @@ export type TaskActionState =
   | { ok: false; error: string; fieldErrors?: Record<string, string[]> }
   | null;
 
-async function requireSession() {
+// Discriminated-union with `ok` for unambiguous narrowing.
+// Use the directly-exported `Session` type instead of inferring from `auth`,
+// which has overloaded signatures that confuse `ReturnType`.
+type SessionGate =
+  | { ok: false; error: string }
+  | { ok: true; session: Session };
+
+async function requireSession(): Promise<SessionGate> {
   const session = await auth();
-  if (!session?.user) return { error: "Not authenticated" as const };
-  return { session };
+  if (!session?.user) return { ok: false, error: "Not authenticated" };
+  return { ok: true, session };
 }
 
-async function requireAdmin() {
-  const r = await requireSession();
-  if ("error" in r) return r;
-  if (r.session.user.role !== "ADMIN") {
-    return { error: "Admin access required" as const };
+async function requireAdmin(): Promise<SessionGate> {
+  const session = await auth();
+  if (!session?.user) return { ok: false, error: "Not authenticated" };
+  if (session.user.role !== "ADMIN") {
+    return { ok: false, error: "Admin access required" };
   }
-  return r;
+  return { ok: true, session };
 }
 
 function flattenZodErrors<T extends Record<string, unknown>>(
@@ -49,7 +57,7 @@ export async function createTaskAction(
   formData: FormData,
 ): Promise<TaskActionState> {
   const gate = await requireAdmin();
-  if ("error" in gate) return { ok: false, error: gate.error };
+  if (!gate.ok) return { ok: false, error: gate.error };
 
   const parsed = createTaskSchema.safeParse({
     title: formData.get("title"),
@@ -106,7 +114,7 @@ export async function updateTaskAction(
   formData: FormData,
 ): Promise<TaskActionState> {
   const gate = await requireAdmin();
-  if ("error" in gate) return { ok: false, error: gate.error };
+  if (!gate.ok) return { ok: false, error: gate.error };
 
   const parsed = updateTaskSchema.safeParse({
     id: formData.get("id"),
@@ -141,7 +149,7 @@ export async function deleteTaskAction(
   formData: FormData,
 ): Promise<TaskActionState> {
   const gate = await requireAdmin();
-  if ("error" in gate) return { ok: false, error: gate.error };
+  if (!gate.ok) return { ok: false, error: gate.error };
 
   const parsed = deleteTaskSchema.safeParse({ id: formData.get("id") });
   if (!parsed.success) return { ok: false, error: "Invalid task id." };
@@ -160,7 +168,7 @@ export async function setMyTaskStatusAction(
   formData: FormData,
 ): Promise<TaskActionState> {
   const gate = await requireSession();
-  if ("error" in gate) return { ok: false, error: gate.error };
+  if (!gate.ok) return { ok: false, error: gate.error };
 
   const parsed = setTaskStatusSchema.safeParse({
     id: formData.get("id"),
