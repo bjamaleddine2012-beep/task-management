@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import type { Session } from "next-auth";
 
 import { auth } from "@/auth";
@@ -326,27 +327,35 @@ export async function submitProofAction(
     }),
   ]);
 
-  // Best-effort AI review. No await on the surrounding action — we still
-  // await here because the user expects the page to reflect a fresh state
-  // when they're sent back. The function itself is short-circuited if the
-  // env var is missing, so this is ~free in that case.
-  const verdict = await reviewProofWithAi({
-    taskTitle: task.title,
-    taskDescription: task.description,
-    imageUrls: parsed.data.images.map((i) => i.url),
-  });
-  if (verdict) {
-    await prisma.task
-      .update({
-        where: { id: task.id },
+  // AI review runs AFTER the response is sent so it can't time out the
+  // submission. The Vercel runtime keeps the worker alive for `after()`
+  // continuations. Verdict is patched onto the task whenever it completes
+  // (admin sees it on next page load). Errors are caught so they never
+  // surface to the user.
+  const taskId = task.id;
+  const taskTitle = task.title;
+  const taskDescription = task.description;
+  const imageUrls = parsed.data.images.map((i) => i.url);
+  after(async () => {
+    try {
+      const verdict = await reviewProofWithAi({
+        taskTitle,
+        taskDescription,
+        imageUrls,
+      });
+      if (!verdict) return;
+      await prisma.task.update({
+        where: { id: taskId },
         data: {
           aiVerdict: verdict.verdict,
           aiConfidence: verdict.confidence,
           aiReasoning: verdict.reasoning,
         },
-      })
-      .catch((err) => console.warn("[submitProof] persist verdict failed:", err));
-  }
+      });
+    } catch (err) {
+      console.warn("[submitProof] AI review failed:", err);
+    }
+  });
 
   revalidatePath("/");
   revalidatePath("/admin/tasks");
