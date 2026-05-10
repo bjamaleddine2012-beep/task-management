@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import type { Session } from "next-auth";
 
 import { auth } from "@/auth";
+import { reviewProofWithAi } from "@/lib/ai-review";
 import { prisma } from "@/lib/prisma";
 import {
   approveProofSchema,
@@ -278,7 +279,13 @@ export async function submitProofAction(
 
   const task = await prisma.task.findUnique({
     where: { id: parsed.data.id },
-    select: { id: true, assignedToId: true, status: true },
+    select: {
+      id: true,
+      title: true,
+      description: true,
+      assignedToId: true,
+      status: true,
+    },
   });
   if (!task) return { ok: false, error: "Task not found." };
   if (task.assignedToId !== gate.session.user.id) {
@@ -289,6 +296,8 @@ export async function submitProofAction(
   }
 
   // Atomic: clear old proof set, save new one, flip status.
+  // AI verdict is computed AFTER the transaction so a slow / failed AI
+  // call never blocks the user. Result is patched in if it arrives.
   await prisma.$transaction([
     prisma.taskProofImage.deleteMany({ where: { taskId: task.id } }),
     prisma.taskProofImage.createMany({
@@ -306,13 +315,38 @@ export async function submitProofAction(
       data: {
         status: "SUBMITTED",
         proofSubmittedAt: new Date(),
-        // Clear any previous review on resubmit.
+        // Clear any previous review and AI verdict on resubmit.
         reviewedAt: null,
         reviewedById: null,
         reviewNote: null,
+        aiVerdict: null,
+        aiConfidence: null,
+        aiReasoning: null,
       },
     }),
   ]);
+
+  // Best-effort AI review. No await on the surrounding action — we still
+  // await here because the user expects the page to reflect a fresh state
+  // when they're sent back. The function itself is short-circuited if the
+  // env var is missing, so this is ~free in that case.
+  const verdict = await reviewProofWithAi({
+    taskTitle: task.title,
+    taskDescription: task.description,
+    imageUrls: parsed.data.images.map((i) => i.url),
+  });
+  if (verdict) {
+    await prisma.task
+      .update({
+        where: { id: task.id },
+        data: {
+          aiVerdict: verdict.verdict,
+          aiConfidence: verdict.confidence,
+          aiReasoning: verdict.reasoning,
+        },
+      })
+      .catch((err) => console.warn("[submitProof] persist verdict failed:", err));
+  }
 
   revalidatePath("/");
   revalidatePath("/admin/tasks");

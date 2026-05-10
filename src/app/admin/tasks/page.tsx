@@ -1,12 +1,22 @@
 import { prisma } from "@/lib/prisma";
 
+import { CalendarView } from "./_components/calendar-view";
 import { CreateTaskDialog } from "./_components/create-task-dialog";
+import { KanbanBoard } from "./_components/kanban-board";
 import { ReviewQueue } from "./_components/review-queue";
 import { TasksTable } from "./_components/tasks-table";
+import { ViewSwitcher, type View } from "./_components/view-switcher";
 
 export const dynamic = "force-dynamic";
 
-export default async function AdminTasksPage() {
+export default async function AdminTasksPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ view?: string }>;
+}) {
+  const { view: viewParam } = await searchParams;
+  const view: View =
+    viewParam === "kanban" || viewParam === "calendar" ? viewParam : "table";
   const [tasks, users] = await Promise.all([
     prisma.task.findMany({
       orderBy: [{ status: "asc" }, { dueDate: "asc" }],
@@ -20,6 +30,10 @@ export default async function AdminTasksPage() {
         createdAt: true,
         proofSubmittedAt: true,
         reviewNote: true,
+        fromTemplateId: true,
+        aiVerdict: true,
+        aiConfidence: true,
+        aiReasoning: true,
         assignedTo: { select: { id: true, name: true, email: true } },
         createdBy: { select: { name: true, email: true } },
         proofImages: {
@@ -43,6 +57,40 @@ export default async function AdminTasksPage() {
       select: { id: true, name: true, email: true, role: true },
     }),
   ]);
+
+  // Photo comparison: for any SUBMITTED task that came from a template, find
+  // the most recent COMPLETED prior instance from the same template so the
+  // admin can compare photos side-by-side. One round-trip per submitted task
+  // — fine at this scale; we'd batch with a window function in SQL if it
+  // grew.
+  const submittedFromTemplates = tasks.filter(
+    (t) => t.status === "SUBMITTED" && t.fromTemplateId,
+  );
+  const previousByTaskId = new Map<string, { url: string }[]>();
+  if (submittedFromTemplates.length > 0) {
+    const prevs = await Promise.all(
+      submittedFromTemplates.map((t) =>
+        prisma.task.findFirst({
+          where: {
+            fromTemplateId: t.fromTemplateId!,
+            id: { not: t.id },
+            status: "COMPLETED",
+          },
+          orderBy: { reviewedAt: "desc" },
+          select: {
+            proofImages: {
+              select: { url: true },
+              orderBy: { uploadedAt: "asc" },
+            },
+          },
+        }),
+      ),
+    );
+    submittedFromTemplates.forEach((t, i) => {
+      const imgs = prevs[i]?.proofImages ?? [];
+      if (imgs.length > 0) previousByTaskId.set(t.id, imgs);
+    });
+  }
 
   // Pre-format on the server to avoid SSR/client locale drift.
   const dueFmt = new Intl.DateTimeFormat("en-US", {
@@ -76,9 +124,26 @@ export default async function AdminTasksPage() {
       ? submittedFmt.format(t.proofSubmittedAt)
       : null,
     isOverdue: t.dueDate < new Date() && t.status !== "COMPLETED",
+    previousProofImages: previousByTaskId.get(t.id) ?? [],
   }));
 
-  const awaitingReview = formattedTasks.filter((t) => t.status === "SUBMITTED");
+  const awaitingReview = formattedTasks
+    .filter((t) => t.status === "SUBMITTED")
+    .map((t) => ({
+      id: t.id,
+      title: t.title,
+      description: t.description,
+      priority: t.priority,
+      dueDateFormatted: t.dueDateFormatted,
+      proofSubmittedFormatted: t.proofSubmittedFormatted,
+      proofImages: t.proofImages,
+      subtasks: t.subtasks,
+      assignedTo: t.assignedTo,
+      previousProofImages: t.previousProofImages,
+      aiVerdict: t.aiVerdict as "match" | "mismatch" | "uncertain" | null,
+      aiConfidence: t.aiConfidence,
+      aiReasoning: t.aiReasoning,
+    }));
 
   return (
     <div className="space-y-8">
@@ -89,7 +154,10 @@ export default async function AdminTasksPage() {
             Create, assign, and review submissions.
           </p>
         </div>
-        <CreateTaskDialog users={users} />
+        <div className="flex items-center gap-3">
+          <ViewSwitcher active={view} />
+          <CreateTaskDialog users={users} />
+        </div>
       </header>
 
       {awaitingReview.length > 0 && (
@@ -105,7 +173,32 @@ export default async function AdminTasksPage() {
         <h2 className="mb-3 text-sm font-medium text-muted-foreground">
           All tasks
         </h2>
-        <TasksTable tasks={formattedTasks} users={users} />
+        {view === "kanban" ? (
+          <KanbanBoard
+            tasks={formattedTasks.map((t) => ({
+              id: t.id,
+              title: t.title,
+              status: t.status,
+              priority: t.priority,
+              dueDateFormatted: t.dueDateFormatted,
+              isOverdue: t.isOverdue,
+              assignedTo: t.assignedTo,
+            }))}
+          />
+        ) : view === "calendar" ? (
+          <CalendarView
+            tasks={formattedTasks.map((t) => ({
+              id: t.id,
+              title: t.title,
+              status: t.status,
+              priority: t.priority,
+              dueAt: t.dueDate.getTime(),
+              assignedTo: t.assignedTo,
+            }))}
+          />
+        ) : (
+          <TasksTable tasks={formattedTasks} users={users} />
+        )}
       </section>
     </div>
   );

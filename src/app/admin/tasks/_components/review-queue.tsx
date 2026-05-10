@@ -50,6 +50,12 @@ export type ReviewQueueTask = {
   proofImages: ReviewQueueImage[];
   subtasks: Array<{ id: string; title: string; done: boolean }>;
   assignedTo: { name: string | null; email: string };
+  // For tasks created from a template: photos from the most recent completed
+  // instance, so the admin can spot regressions or verify consistency.
+  previousProofImages: Array<{ url: string }>;
+  aiVerdict: "match" | "mismatch" | "uncertain" | null;
+  aiConfidence: number | null;
+  aiReasoning: string | null;
 };
 
 export function ReviewQueue({ tasks }: { tasks: ReviewQueueTask[] }) {
@@ -180,6 +186,62 @@ function ReviewDialog({
             )}
 
             <PhotoGallery images={task.proofImages} />
+
+            {task.aiVerdict && (
+              <div
+                className={
+                  "rounded-md border p-3 text-sm " +
+                  (task.aiVerdict === "match"
+                    ? "border-emerald-300/60 bg-emerald-50 text-emerald-900 dark:bg-emerald-950/20 dark:text-emerald-200"
+                    : task.aiVerdict === "mismatch"
+                      ? "border-destructive/40 bg-destructive/5 text-destructive"
+                      : "border-amber-300/60 bg-amber-50 text-amber-900 dark:bg-amber-950/20 dark:text-amber-200")
+                }
+              >
+                <div className="mb-1 flex items-center gap-2 text-xs font-medium uppercase tracking-wide">
+                  AI hint · {task.aiVerdict}
+                  {task.aiConfidence != null && (
+                    <span className="opacity-70">
+                      {task.aiConfidence}% confident
+                    </span>
+                  )}
+                </div>
+                {task.aiReasoning && (
+                  <p className="text-xs">{task.aiReasoning}</p>
+                )}
+                <p className="mt-1 text-[10px] opacity-60">
+                  Hint only — your decision still applies.
+                </p>
+              </div>
+            )}
+
+            {task.previousProofImages.length > 0 && (
+              <details className="rounded-md border bg-muted/20 p-3">
+                <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                  Compare with last completed instance ·{" "}
+                  {task.previousProofImages.length} photo
+                  {task.previousProofImages.length === 1 ? "" : "s"}
+                </summary>
+                <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-4">
+                  {task.previousProofImages.map((img, i) => (
+                    <a
+                      key={i}
+                      href={img.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block aspect-square overflow-hidden rounded border bg-muted"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={img.url}
+                        alt=""
+                        className="h-full w-full object-cover opacity-90 transition hover:opacity-100"
+                      />
+                    </a>
+                  ))}
+                </div>
+              </details>
+            )}
 
             <div className="space-y-1.5">
               <Label htmlFor="review-note">

@@ -61,10 +61,12 @@ model User {
   accounts      Account[]
   sessions      Session[]
 
-  assignedTasks     Task[]    @relation("AssignedTasks")
-  createdTasks      Task[]    @relation("CreatedTasks")
-  reviewedTasks     Task[]    @relation("ReviewedTasks")
-  completedSubtasks Subtask[] @relation("CompletedSubtasks")
+  assignedTasks       Task[]         @relation("AssignedTasks")
+  createdTasks        Task[]         @relation("CreatedTasks")
+  reviewedTasks       Task[]         @relation("ReviewedTasks")
+  completedSubtasks   Subtask[]      @relation("CompletedSubtasks")
+  createdTemplates    TaskTemplate[] @relation("CreatedTemplates")
+  defaultedTemplates  TaskTemplate[] @relation("TemplateDefaultAssignee")
 
   @@index([role])
 }
@@ -131,6 +133,12 @@ model Task {
   reviewedBy       User?     @relation("ReviewedTasks", fields: [reviewedById], references: [id], onDelete: SetNull)
   reviewNote       String?   // admin's note on approval/rejection
 
+  // Optional AI verdict on the submitted proof, generated when the user
+  // hits "Submit". Just a hint for the admin — doesn't auto-decide.
+  aiVerdict        String?   // "match" | "mismatch" | "uncertain"
+  aiConfidence     Int?      // 0-100
+  aiReasoning      String?
+
   // One task → many proof photos (multi-photo submissions). On resubmit
   // the old TaskProofImage rows are deleted, so the set always reflects
   // the current `proofSubmittedAt`.
@@ -138,6 +146,11 @@ model Task {
 
   // One task → many subtasks (checklist items the assignee ticks off).
   subtasks         Subtask[]
+
+  // Optional link to the template that created this task. Lets the admin
+  // see previous instances side-by-side during review (photo comparison).
+  fromTemplateId   String?
+  fromTemplate     TaskTemplate? @relation("FromTemplate", fields: [fromTemplateId], references: [id], onDelete: SetNull)
 
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -147,6 +160,45 @@ model Task {
   @@index([reviewedById])
   @@index([status])
   @@index([dueDate])
+  @@index([fromTemplateId])
+}
+
+model TaskTemplate {
+  id          String       @id @default(cuid())
+  // Display name in the admin's template list.
+  name        String
+  // Becomes the spawned Task's `title`.
+  title       String
+  description String?
+  priority    TaskPriority @default(MEDIUM)
+  // Newline-separated checklist items, stored as a JSON string array.
+  // (Postgres JSON column would be cleaner but this keeps the UI simple.)
+  subtasks    String?
+
+  defaultAssigneeId String?
+  defaultAssignee   User?   @relation("TemplateDefaultAssignee", fields: [defaultAssigneeId], references: [id], onDelete: SetNull)
+
+  // Recurrence: null = manual (admin clicks "Create from template" when needed).
+  // intervalDays: spawn a new task every N days. 1=daily, 7=weekly, 30=~monthly.
+  intervalDays Int?
+  // Local hour the recurring spawn should target (0-23). Used to set dueDate
+  // when spawning. Null defaults to 17 (5pm).
+  dueHourLocal Int?
+  // Bookkeeping for the cron job: when the spawner last ran for this template.
+  lastSpawnedAt DateTime?
+  active       Boolean    @default(true)
+
+  createdById String
+  createdBy   User       @relation("CreatedTemplates", fields: [createdById], references: [id], onDelete: Cascade)
+
+  spawnedTasks Task[]    @relation("FromTemplate")
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([createdById])
+  @@index([defaultAssigneeId])
+  @@index([intervalDays, active])
 }
 
 model TaskProofImage {

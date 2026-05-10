@@ -1,6 +1,13 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { LayoutDashboard, Users, ListChecks, LogOut } from "lucide-react";
+import {
+  BarChart3,
+  LayoutDashboard,
+  Library,
+  ListChecks,
+  LogOut,
+  Users,
+} from "lucide-react";
 
 import { auth, signOut } from "@/auth";
 import { Button } from "@/components/ui/button";
@@ -10,6 +17,8 @@ const NAV = [
   { href: "/admin", label: "Overview", icon: LayoutDashboard },
   { href: "/admin/users", label: "Users", icon: Users },
   { href: "/admin/tasks", label: "Tasks", icon: ListChecks },
+  { href: "/admin/templates", label: "Templates", icon: Library },
+  { href: "/admin/analytics", label: "Analytics", icon: BarChart3 },
 ] as const;
 
 export default async function AdminLayout({
