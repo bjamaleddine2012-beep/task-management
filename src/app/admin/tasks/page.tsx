@@ -18,11 +18,24 @@ export default async function AdminTasksPage() {
         priority: true,
         status: true,
         createdAt: true,
-        proofImageUrl: true,
         proofSubmittedAt: true,
         reviewNote: true,
         assignedTo: { select: { id: true, name: true, email: true } },
         createdBy: { select: { name: true, email: true } },
+        proofImages: {
+          select: {
+            id: true,
+            url: true,
+            latitude: true,
+            longitude: true,
+            accuracyMeters: true,
+          },
+          orderBy: { uploadedAt: "asc" },
+        },
+        subtasks: {
+          orderBy: { position: "asc" },
+          select: { id: true, title: true, done: true },
+        },
       },
     }),
     prisma.user.findMany({

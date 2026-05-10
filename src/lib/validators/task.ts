@@ -32,6 +32,13 @@ export const createTaskSchema = z.object({
   dueDate: dueDateString,
   priority: z.nativeEnum(TaskPriority),
   assignedToId: z.string().min(1, "Assignee is required"),
+  // Optional checklist items; the form passes a newline-delimited string
+  // and we split on the server.
+  subtasks: z
+    .array(z.string().trim().min(1).max(200))
+    .max(50, "Up to 50 subtasks per task")
+    .optional()
+    .default([]),
 });
 
 export const updateTaskSchema = z.object({
@@ -61,18 +68,49 @@ export const updateTaskSchema = z.object({
 // User submits proof for review. Status moves to SUBMITTED.
 // Allowed only when current status is PENDING / IN_PROGRESS / REJECTED.
 //
-// `proofUrl` is the URL returned by Vercel Blob after a client-direct
-// upload. The server validates the host so we don't accidentally save
-// arbitrary external URLs.
-export const submitProofSchema = z.object({
-  id: z.string().min(1),
-  proofUrl: z
+// Each image's `url` is what Vercel Blob returned after a client-direct
+// upload. The server validates the host so we don't save arbitrary URLs.
+const proofImageSchema = z.object({
+  url: z
     .string()
     .url("Upload didn't complete — try again")
     .refine(
       (u) => /\.public\.blob\.vercel-storage\.com\//.test(u),
       "Invalid upload URL",
     ),
+  latitude: z.number().min(-90).max(90).optional(),
+  longitude: z.number().min(-180).max(180).optional(),
+  accuracyMeters: z.number().int().nonnegative().optional(),
+  capturedAt: z
+    .string()
+    .datetime({ offset: true })
+    .optional()
+    .transform((s) => (s ? new Date(s) : undefined)),
+});
+
+export const submitProofSchema = z.object({
+  id: z.string().min(1),
+  images: z
+    .array(proofImageSchema)
+    .min(1, "At least one photo is required")
+    .max(10, "Up to 10 photos per submission"),
+});
+
+// Subtask schemas
+export const subtaskCreateSchema = z.object({
+  taskId: z.string().min(1),
+  title: z.string().trim().min(1, "Required").max(200),
+});
+
+export const subtaskToggleSchema = z.object({
+  id: z.string().min(1),
+  done: z.union([z.boolean(), z.literal("true"), z.literal("false")]).transform(
+    (v) => (typeof v === "boolean" ? v : v === "true"),
+  ),
+});
+
+export const subtaskDeleteSchema = z.object({
+  id: z.string().min(1),
 });
 
 // Admin approves submitted proof → COMPLETED.

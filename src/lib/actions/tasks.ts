@@ -12,6 +12,9 @@ import {
   rejectProofSchema,
   setTaskStatusSchema,
   submitProofSchema,
+  subtaskCreateSchema,
+  subtaskDeleteSchema,
+  subtaskToggleSchema,
   updateTaskSchema,
 } from "@/lib/validators/task";
 
@@ -62,12 +65,20 @@ export async function createTaskAction(
   const gate = await requireAdmin();
   if (!gate.ok) return { ok: false, error: gate.error };
 
+  // Subtasks come as a single newline-separated textarea; parse here.
+  const subtasksRaw = (formData.get("subtasks") as string | null) ?? "";
+  const subtasks = subtasksRaw
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
   const parsed = createTaskSchema.safeParse({
     title: formData.get("title"),
     description: formData.get("description"),
     dueDate: formData.get("dueDate"),
     priority: formData.get("priority"),
     assignedToId: formData.get("assignedToId"),
+    subtasks,
   });
 
   if (!parsed.success) {
@@ -78,7 +89,14 @@ export async function createTaskAction(
     };
   }
 
-  const { title, description, dueDate, priority, assignedToId } = parsed.data;
+  const {
+    title,
+    description,
+    dueDate,
+    priority,
+    assignedToId,
+    subtasks: items,
+  } = parsed.data;
 
   // Make sure the assignee actually exists.
   const assignee = await prisma.user.findUnique({
@@ -101,6 +119,15 @@ export async function createTaskAction(
       priority,
       assignedToId,
       createdById: gate.session.user.id,
+      subtasks:
+        items.length > 0
+          ? {
+              create: items.map((title, i) => ({
+                title,
+                position: i,
+              })),
+            }
+          : undefined,
     },
   });
 
@@ -216,35 +243,36 @@ export async function setMyTaskStatusAction(
   return { ok: true };
 }
 
-// ─── User: register proof image (already uploaded directly to Blob) ────────
+// ─── User: register proof images (already uploaded directly to Blob) ───────
 //
-// The browser uploads the file directly to Vercel Blob via /api/blob/upload
+// The browser uploads each file directly to Vercel Blob via /api/blob/upload
 // (bypasses the 4.5 MB serverless function body limit). Then it calls this
-// action with just the resulting URL. We re-check ownership here.
+// action with the resulting URLs + per-photo geolocation. We re-check
+// ownership here and replace any previous proof set on resubmit.
+
+export type SubmitProofInput = {
+  id: string;
+  images: Array<{
+    url: string;
+    latitude?: number;
+    longitude?: number;
+    accuracyMeters?: number;
+    capturedAt?: string; // ISO string from the client
+  }>;
+};
 
 export async function submitProofAction(
-  _prev: TaskActionState,
-  formData: FormData,
+  input: SubmitProofInput,
 ): Promise<TaskActionState> {
   const gate = await requireSession();
   if (!gate.ok) return { ok: false, error: gate.error };
 
-  const parsed = submitProofSchema.safeParse({
-    id: formData.get("id"),
-    proofUrl: formData.get("proofUrl"),
-  });
+  const parsed = submitProofSchema.safeParse(input);
   if (!parsed.success) {
     return {
       ok: false,
       error: parsed.error.issues[0]?.message ?? "Invalid input.",
-      fieldErrors: parsed.error.issues.reduce<Record<string, string[]>>(
-        (acc, issue) => {
-          const key = issue.path.join(".") || "_root";
-          (acc[key] ??= []).push(issue.message);
-          return acc;
-        },
-        {},
-      ),
+      fieldErrors: flattenZodErrors(parsed.error),
     };
   }
 
@@ -260,18 +288,31 @@ export async function submitProofAction(
     return { ok: false, error: "This task is already completed." };
   }
 
-  await prisma.task.update({
-    where: { id: task.id },
-    data: {
-      status: "SUBMITTED",
-      proofImageUrl: parsed.data.proofUrl,
-      proofSubmittedAt: new Date(),
-      // Clear any previous review on resubmit.
-      reviewedAt: null,
-      reviewedById: null,
-      reviewNote: null,
-    },
-  });
+  // Atomic: clear old proof set, save new one, flip status.
+  await prisma.$transaction([
+    prisma.taskProofImage.deleteMany({ where: { taskId: task.id } }),
+    prisma.taskProofImage.createMany({
+      data: parsed.data.images.map((img) => ({
+        taskId: task.id,
+        url: img.url,
+        latitude: img.latitude,
+        longitude: img.longitude,
+        accuracyMeters: img.accuracyMeters,
+        capturedAt: img.capturedAt,
+      })),
+    }),
+    prisma.task.update({
+      where: { id: task.id },
+      data: {
+        status: "SUBMITTED",
+        proofSubmittedAt: new Date(),
+        // Clear any previous review on resubmit.
+        reviewedAt: null,
+        reviewedById: null,
+        reviewNote: null,
+      },
+    }),
+  ]);
 
   revalidatePath("/");
   revalidatePath("/admin/tasks");
@@ -373,4 +414,110 @@ export async function rejectProofAction(
   revalidatePath("/admin/tasks");
   revalidatePath("/");
   return { ok: true, message: "Rejected." };
+}
+
+// ─── Subtasks (checklist items) ────────────────────────────────────────────
+
+// Owner of the parent task or any admin can edit the checklist.
+async function canEditSubtask(taskId: string, session: Session) {
+  if (session.user.role === "ADMIN") return true;
+  const task = await prisma.task.findUnique({
+    where: { id: taskId },
+    select: { assignedToId: true },
+  });
+  return task?.assignedToId === session.user.id;
+}
+
+// Admin-only — adds a checklist item to an existing task.
+export async function addSubtaskAction(
+  _prev: TaskActionState,
+  formData: FormData,
+): Promise<TaskActionState> {
+  const gate = await requireAdmin();
+  if (!gate.ok) return { ok: false, error: gate.error };
+
+  const parsed = subtaskCreateSchema.safeParse({
+    taskId: formData.get("taskId"),
+    title: formData.get("title"),
+  });
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: "Please fix the errors below.",
+      fieldErrors: flattenZodErrors(parsed.error),
+    };
+  }
+
+  // Append after the highest-positioned existing subtask.
+  const last = await prisma.subtask.findFirst({
+    where: { taskId: parsed.data.taskId },
+    orderBy: { position: "desc" },
+    select: { position: true },
+  });
+
+  await prisma.subtask.create({
+    data: {
+      taskId: parsed.data.taskId,
+      title: parsed.data.title,
+      position: (last?.position ?? -1) + 1,
+    },
+  });
+
+  revalidatePath("/admin/tasks");
+  revalidatePath("/");
+  return { ok: true };
+}
+
+// Assignee or admin — flips a checkbox on a subtask.
+export async function toggleSubtaskAction(
+  _prev: TaskActionState,
+  formData: FormData,
+): Promise<TaskActionState> {
+  const gate = await requireSession();
+  if (!gate.ok) return { ok: false, error: gate.error };
+
+  const parsed = subtaskToggleSchema.safeParse({
+    id: formData.get("id"),
+    done: formData.get("done"),
+  });
+  if (!parsed.success) return { ok: false, error: "Invalid input." };
+
+  const subtask = await prisma.subtask.findUnique({
+    where: { id: parsed.data.id },
+    select: { taskId: true },
+  });
+  if (!subtask) return { ok: false, error: "Subtask not found." };
+
+  const allowed = await canEditSubtask(subtask.taskId, gate.session);
+  if (!allowed) return { ok: false, error: "Not allowed." };
+
+  await prisma.subtask.update({
+    where: { id: parsed.data.id },
+    data: {
+      done: parsed.data.done,
+      doneAt: parsed.data.done ? new Date() : null,
+      doneById: parsed.data.done ? gate.session.user.id : null,
+    },
+  });
+
+  revalidatePath("/");
+  revalidatePath("/admin/tasks");
+  return { ok: true };
+}
+
+// Admin-only — deletes a checklist item.
+export async function deleteSubtaskAction(
+  _prev: TaskActionState,
+  formData: FormData,
+): Promise<TaskActionState> {
+  const gate = await requireAdmin();
+  if (!gate.ok) return { ok: false, error: gate.error };
+
+  const parsed = subtaskDeleteSchema.safeParse({ id: formData.get("id") });
+  if (!parsed.success) return { ok: false, error: "Invalid input." };
+
+  await prisma.subtask.delete({ where: { id: parsed.data.id } });
+  revalidatePath("/admin/tasks");
+  revalidatePath("/");
+  return { ok: true };
 }

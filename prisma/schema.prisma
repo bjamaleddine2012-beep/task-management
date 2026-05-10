@@ -61,9 +61,10 @@ model User {
   accounts      Account[]
   sessions      Session[]
 
-  assignedTasks Task[]    @relation("AssignedTasks")
-  createdTasks  Task[]    @relation("CreatedTasks")
-  reviewedTasks Task[]    @relation("ReviewedTasks")
+  assignedTasks     Task[]    @relation("AssignedTasks")
+  createdTasks      Task[]    @relation("CreatedTasks")
+  reviewedTasks     Task[]    @relation("ReviewedTasks")
+  completedSubtasks Subtask[] @relation("CompletedSubtasks")
 
   @@index([role])
 }
@@ -124,12 +125,19 @@ model Task {
   createdBy    User   @relation("CreatedTasks", fields: [createdById], references: [id], onDelete: Restrict)
 
   // Proof-of-completion review flow
-  proofImageUrl    String?
   proofSubmittedAt DateTime?
   reviewedAt       DateTime?
   reviewedById     String?
   reviewedBy       User?     @relation("ReviewedTasks", fields: [reviewedById], references: [id], onDelete: SetNull)
   reviewNote       String?   // admin's note on approval/rejection
+
+  // One task → many proof photos (multi-photo submissions). On resubmit
+  // the old TaskProofImage rows are deleted, so the set always reflects
+  // the current `proofSubmittedAt`.
+  proofImages      TaskProofImage[]
+
+  // One task → many subtasks (checklist items the assignee ticks off).
+  subtasks         Subtask[]
 
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -139,6 +147,40 @@ model Task {
   @@index([reviewedById])
   @@index([status])
   @@index([dueDate])
+}
+
+model TaskProofImage {
+  id             String   @id @default(cuid())
+  taskId         String
+  task           Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  url            String
+  // Geolocation captured on the device when the file was selected.
+  // Optional because the user may decline the permission prompt.
+  latitude       Float?
+  longitude      Float?
+  accuracyMeters Int?
+  // Browser-side timestamp at the moment of capture (separate from
+  // uploadedAt, which is the server-side row creation time).
+  capturedAt     DateTime?
+  uploadedAt     DateTime @default(now())
+
+  @@index([taskId])
+}
+
+model Subtask {
+  id        String    @id @default(cuid())
+  taskId    String
+  task      Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  title     String
+  done      Boolean   @default(false)
+  doneAt    DateTime?
+  doneById  String?
+  doneBy    User?     @relation("CompletedSubtasks", fields: [doneById], references: [id], onDelete: SetNull)
+  position  Int       @default(0)  // for ordering
+  createdAt DateTime  @default(now())
+
+  @@index([taskId])
+  @@index([doneById])
 }
 
 // ─── MongoDB note ───────────────────────────────────────────────────────────

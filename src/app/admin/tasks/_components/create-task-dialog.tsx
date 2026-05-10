@@ -162,6 +162,23 @@ export function CreateTaskDialog({ users }: { users: UserOption[] }) {
             )}
           </div>
 
+          <div className="space-y-1.5">
+            <Label htmlFor="subtasks">
+              Checklist{" "}
+              <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <textarea
+              id="subtasks"
+              name="subtasks"
+              rows={4}
+              placeholder={"One item per line, e.g.\nWipe counters\nMop floor\nRefill soap"}
+              className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+            <p className="text-xs text-muted-foreground">
+              The assignee can tick these off as they go.
+            </p>
+          </div>
+
           {state && !state.ok && !state.fieldErrors && (
             <p className="text-sm text-destructive" role="alert">
               {state.error}

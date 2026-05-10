@@ -2,8 +2,7 @@
 
 import * as React from "react";
 import { useActionState } from "react";
-import Image from "next/image";
-import { Check, Loader2, X } from "lucide-react";
+import { Check, ExternalLink, Loader2, MapPin, X } from "lucide-react";
 import type { TaskPriority } from "@prisma/client";
 
 import { Badge } from "@/components/ui/badge";
@@ -22,6 +21,7 @@ import {
   rejectProofAction,
   type TaskActionState,
 } from "@/lib/actions/tasks";
+import { SubtaskChecklist } from "@/app/_components/subtask-checklist";
 
 const PRIORITY_VARIANT: Record<
   TaskPriority,
@@ -32,14 +32,23 @@ const PRIORITY_VARIANT: Record<
   LOW: "secondary",
 };
 
+export type ReviewQueueImage = {
+  id: string;
+  url: string;
+  latitude: number | null;
+  longitude: number | null;
+  accuracyMeters: number | null;
+};
+
 export type ReviewQueueTask = {
   id: string;
   title: string;
   description: string | null;
   priority: TaskPriority;
   dueDateFormatted: string;
-  proofImageUrl: string | null;
   proofSubmittedFormatted: string | null;
+  proofImages: ReviewQueueImage[];
+  subtasks: Array<{ id: string; title: string; done: boolean }>;
   assignedTo: { name: string | null; email: string };
 };
 
@@ -51,48 +60,59 @@ export function ReviewQueue({ tasks }: { tasks: ReviewQueueTask[] }) {
   return (
     <>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {tasks.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setReviewing(t)}
-            className="group overflow-hidden rounded-lg border bg-background text-left transition-shadow hover:shadow-md"
-          >
-            {t.proofImageUrl ? (
-              <div className="relative aspect-video bg-muted">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={t.proofImageUrl}
-                  alt={`Proof for ${t.title}`}
-                  className="h-full w-full object-cover transition-transform group-hover:scale-105"
-                />
+        {tasks.map((t) => {
+          const cover = t.proofImages[0];
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setReviewing(t)}
+              className="group overflow-hidden rounded-lg border bg-background text-left transition-shadow hover:shadow-md"
+            >
+              {cover ? (
+                <div className="relative aspect-video bg-muted">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={cover.url}
+                    alt={`Proof for ${t.title}`}
+                    className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                  />
+                  {t.proofImages.length > 1 && (
+                    <div className="absolute right-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white">
+                      +{t.proofImages.length - 1}
+                    </div>
+                  )}
+                  {cover.latitude !== null && cover.longitude !== null && (
+                    <div className="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white">
+                      <MapPin className="h-3 w-3" />
+                      Geo-tagged
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="flex aspect-video items-center justify-center bg-muted text-xs text-muted-foreground">
+                  No image
+                </div>
+              )}
+              <div className="space-y-1 p-3">
+                <div className="flex items-center gap-2">
+                  <p className="line-clamp-1 font-medium">{t.title}</p>
+                  <Badge variant={PRIORITY_VARIANT[t.priority]}>
+                    {t.priority}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {t.assignedTo.name ?? t.assignedTo.email}
+                  {t.proofSubmittedFormatted &&
+                    ` · ${t.proofSubmittedFormatted}`}
+                </p>
               </div>
-            ) : (
-              <div className="flex aspect-video items-center justify-center bg-muted text-xs text-muted-foreground">
-                No image
-              </div>
-            )}
-            <div className="space-y-1 p-3">
-              <div className="flex items-center gap-2">
-                <p className="line-clamp-1 font-medium">{t.title}</p>
-                <Badge variant={PRIORITY_VARIANT[t.priority]}>
-                  {t.priority}
-                </Badge>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {t.assignedTo.name ?? t.assignedTo.email}
-                {t.proofSubmittedFormatted &&
-                  ` · submitted ${t.proofSubmittedFormatted}`}
-              </p>
-            </div>
-          </button>
-        ))}
+            </button>
+          );
+        })}
       </div>
 
-      <ReviewDialog
-        task={reviewing}
-        onClose={() => setReviewing(null)}
-      />
+      <ReviewDialog task={reviewing} onClose={() => setReviewing(null)} />
     </>
   );
 }
@@ -122,9 +142,13 @@ function ReviewDialog({
     (rejectState && !rejectState.ok && rejectState.error) ||
     null;
 
+  const subtaskProgress = task
+    ? `${task.subtasks.filter((s) => s.done).length}/${task.subtasks.length}`
+    : "";
+
   return (
     <Dialog open={!!task} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle>Review submission</DialogTitle>
           <DialogDescription>
@@ -146,20 +170,23 @@ function ReviewDialog({
               </p>
             )}
 
-            {task.proofImageUrl && (
-              <div className="relative overflow-hidden rounded-lg border">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={task.proofImageUrl}
-                  alt="Proof of completion"
-                  className="max-h-[60vh] w-full object-contain bg-black/5"
-                />
+            {task.subtasks.length > 0 && (
+              <div className="rounded-md border bg-muted/30 p-3">
+                <p className="mb-2 text-xs font-medium text-muted-foreground">
+                  Checklist · {subtaskProgress}
+                </p>
+                <SubtaskChecklist subtasks={task.subtasks} readOnly />
               </div>
             )}
 
+            <PhotoGallery images={task.proofImages} />
+
             <div className="space-y-1.5">
               <Label htmlFor="review-note">
-                Note <span className="text-muted-foreground">(required for reject)</span>
+                Note{" "}
+                <span className="text-muted-foreground">
+                  (required for reject)
+                </span>
               </Label>
               <textarea
                 id="review-note"
@@ -178,7 +205,6 @@ function ReviewDialog({
             )}
 
             <DialogFooter className="gap-2">
-              {/* Reject form gets the note input via the `form` attribute above. */}
               <form id="reject-form" action={rejectAction}>
                 <input type="hidden" name="id" value={task.id} />
                 <Button
@@ -213,6 +239,63 @@ function ReviewDialog({
   );
 }
 
-// Image is imported only to keep next/image available if you swap later.
-// Currently using <img> because Vercel Blob URLs aren't pre-known to next.config.
-void Image;
+function PhotoGallery({ images }: { images: ReviewQueueImage[] }) {
+  const [active, setActive] = React.useState(0);
+  const current = images[active];
+
+  if (!current) return null;
+
+  return (
+    <div className="space-y-2">
+      <div className="relative overflow-hidden rounded-lg border bg-black/5">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={current.url}
+          alt={`Proof ${active + 1} of ${images.length}`}
+          className="max-h-[55vh] w-full object-contain"
+        />
+        {current.latitude !== null && current.longitude !== null && (
+          <a
+            href={`https://www.google.com/maps?q=${current.latitude},${current.longitude}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="absolute bottom-3 left-3 inline-flex items-center gap-1 rounded-md bg-black/70 px-2 py-1 text-xs text-white hover:bg-black/85"
+          >
+            <MapPin className="h-3.5 w-3.5" />
+            {current.latitude.toFixed(5)}, {current.longitude.toFixed(5)}
+            {current.accuracyMeters && ` · ±${current.accuracyMeters}m`}
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        )}
+        {images.length > 1 && (
+          <div className="absolute right-3 top-3 rounded-md bg-black/70 px-2 py-1 text-xs text-white">
+            {active + 1} / {images.length}
+          </div>
+        )}
+      </div>
+
+      {images.length > 1 && (
+        <div className="grid grid-cols-6 gap-1">
+          {images.map((img, i) => (
+            <button
+              key={img.id}
+              type="button"
+              onClick={() => setActive(i)}
+              className={
+                "aspect-square overflow-hidden rounded-md border-2 transition-colors " +
+                (i === active ? "border-primary" : "border-transparent")
+              }
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={img.url}
+                alt=""
+                className="h-full w-full object-cover"
+              />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

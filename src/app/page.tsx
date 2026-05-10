@@ -16,6 +16,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { SubmitProofDialog } from "./_components/submit-proof-dialog";
+import { SubtaskChecklist, type SubtaskItem } from "./_components/subtask-checklist";
 import { TaskStatusForm } from "./_components/task-status-form";
 
 export const dynamic = "force-dynamic";
@@ -51,10 +52,17 @@ export default async function DashboardPage() {
       dueDate: true,
       priority: true,
       status: true,
-      proofImageUrl: true,
       reviewNote: true,
       reviewedAt: true,
       createdBy: { select: { name: true, email: true } },
+      proofImages: {
+        select: { id: true, url: true },
+        orderBy: { uploadedAt: "asc" },
+      },
+      subtasks: {
+        orderBy: { position: "asc" },
+        select: { id: true, title: true, done: true },
+      },
     },
   });
 
@@ -201,7 +209,8 @@ type TaskRowData = {
   isDueSoon: boolean;
   priority: TaskPriority;
   status: TaskStatus;
-  proofImageUrl: string | null;
+  proofImages: Array<{ id: string; url: string }>;
+  subtasks: SubtaskItem[];
   reviewNote: string | null;
   reviewedAt: Date | null;
   createdBy: { name: string | null; email: string };
@@ -249,6 +258,41 @@ function TaskRow({ task }: { task: TaskRowData }) {
             </span>{" "}
             · from {task.createdBy.name ?? task.createdBy.email}
           </p>
+
+          {task.subtasks.length > 0 && (
+            <div className="mt-3 rounded-md border bg-muted/30 p-2">
+              <SubtaskChecklist
+                subtasks={task.subtasks}
+                readOnly={task.status === "COMPLETED"}
+              />
+            </div>
+          )}
+
+          {task.proofImages.length > 0 && task.status !== "COMPLETED" && (
+            <div className="mt-3 grid grid-cols-3 gap-1.5 sm:grid-cols-4">
+              {task.proofImages.slice(0, 4).map((img) => (
+                <a
+                  key={img.id}
+                  href={img.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block aspect-square overflow-hidden rounded-md border bg-muted"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={img.url}
+                    alt="Proof"
+                    className="h-full w-full object-cover"
+                  />
+                </a>
+              ))}
+              {task.proofImages.length > 4 && (
+                <div className="flex aspect-square items-center justify-center rounded-md border bg-muted text-xs text-muted-foreground">
+                  +{task.proofImages.length - 4}
+                </div>
+              )}
+            </div>
+          )}
 
           {task.status === "REJECTED" && task.reviewNote && (
             <p className="mt-2 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
