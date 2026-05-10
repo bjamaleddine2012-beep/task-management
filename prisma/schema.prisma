@@ -28,9 +28,11 @@ enum Role {
 }
 
 enum TaskStatus {
-  PENDING
-  IN_PROGRESS
-  COMPLETED
+  PENDING                  // assigned, not started
+  IN_PROGRESS              // user is working on it
+  SUBMITTED                // user uploaded proof; awaiting admin review
+  COMPLETED                // admin approved the proof
+  REJECTED                 // admin rejected the proof; user must resubmit
 }
 
 enum TaskPriority {
@@ -61,6 +63,7 @@ model User {
 
   assignedTasks Task[]    @relation("AssignedTasks")
   createdTasks  Task[]    @relation("CreatedTasks")
+  reviewedTasks Task[]    @relation("ReviewedTasks")
 
   @@index([role])
 }
@@ -110,7 +113,7 @@ model Task {
   id          String       @id @default(cuid())
   title       String
   description String?
-  dueDate     DateTime
+  dueDate     DateTime     // stores both date and time (timestamp)
   priority    TaskPriority @default(MEDIUM)
   status      TaskStatus   @default(PENDING)
 
@@ -120,11 +123,20 @@ model Task {
   createdById  String
   createdBy    User   @relation("CreatedTasks", fields: [createdById], references: [id], onDelete: Restrict)
 
+  // Proof-of-completion review flow
+  proofImageUrl    String?
+  proofSubmittedAt DateTime?
+  reviewedAt       DateTime?
+  reviewedById     String?
+  reviewedBy       User?     @relation("ReviewedTasks", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewNote       String?   // admin's note on approval/rejection
+
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   @@index([assignedToId])
   @@index([createdById])
+  @@index([reviewedById])
   @@index([status])
   @@index([dueDate])
 }

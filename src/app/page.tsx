@@ -15,6 +15,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { SubmitProofDialog } from "./_components/submit-proof-dialog";
 import { TaskStatusForm } from "./_components/task-status-form";
 
 export const dynamic = "force-dynamic";
@@ -31,7 +32,9 @@ const PRIORITY_VARIANT: Record<
 const STATUS_LABEL: Record<TaskStatus, string> = {
   PENDING: "Pending",
   IN_PROGRESS: "In progress",
+  SUBMITTED: "Awaiting review",
   COMPLETED: "Done",
+  REJECTED: "Needs redo",
 };
 
 export default async function DashboardPage() {
@@ -48,6 +51,9 @@ export default async function DashboardPage() {
       dueDate: true,
       priority: true,
       status: true,
+      proofImageUrl: true,
+      reviewNote: true,
+      reviewedAt: true,
       createdBy: { select: { name: true, email: true } },
     },
   });
@@ -56,12 +62,26 @@ export default async function DashboardPage() {
   const soon = new Date(now);
   soon.setDate(soon.getDate() + 3);
 
-  const open = tasks.filter((t) => t.status !== "COMPLETED");
-  const done = tasks.filter((t) => t.status === "COMPLETED");
-  const overdue = open.filter((t) => t.dueDate < now);
-  const dueSoon = open.filter(
-    (t) => t.dueDate >= now && t.dueDate <= soon,
-  );
+  const dueFmt = new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+
+  const formatted = tasks.map((t) => ({
+    ...t,
+    dueDateFormatted: dueFmt.format(t.dueDate),
+    isOverdue: t.dueDate < now && t.status !== "COMPLETED",
+    isDueSoon:
+      t.dueDate >= now && t.dueDate <= soon && t.status !== "COMPLETED",
+  }));
+
+  const open = formatted.filter((t) => t.status !== "COMPLETED");
+  const done = formatted.filter((t) => t.status === "COMPLETED");
+  const overdue = open.filter((t) => t.isOverdue);
+  const dueSoon = open.filter((t) => t.isDueSoon);
 
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
@@ -110,7 +130,7 @@ export default async function DashboardPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="text-sm text-destructive/80">
-                Past due date — please complete or update.
+                Past due — please complete and submit proof.
               </CardContent>
             </Card>
           )}
@@ -131,26 +151,14 @@ export default async function DashboardPage() {
 
       <Section title="Open" empty="No open tasks. You're caught up.">
         {open.map((task) => (
-          <TaskRow
-            key={task.id}
-            task={task}
-            now={now}
-            soonCutoff={soon}
-            highlight={
-              task.dueDate < now
-                ? "overdue"
-                : task.dueDate <= soon
-                  ? "soon"
-                  : null
-            }
-          />
+          <TaskRow key={task.id} task={task} />
         ))}
       </Section>
 
       {done.length > 0 && (
         <Section title="Completed">
           {done.map((task) => (
-            <TaskRow key={task.id} task={task} now={now} soonCutoff={soon} />
+            <TaskRow key={task.id} task={task} />
           ))}
         </Section>
       )}
@@ -188,38 +196,40 @@ type TaskRowData = {
   id: string;
   title: string;
   description: string | null;
-  dueDate: Date;
+  dueDateFormatted: string;
+  isOverdue: boolean;
+  isDueSoon: boolean;
   priority: TaskPriority;
   status: TaskStatus;
+  proofImageUrl: string | null;
+  reviewNote: string | null;
+  reviewedAt: Date | null;
   createdBy: { name: string | null; email: string };
 };
 
-function TaskRow({
-  task,
-  highlight,
-}: {
-  task: TaskRowData;
-  now: Date;
-  soonCutoff: Date;
-  highlight?: "overdue" | "soon" | null;
-}) {
+function TaskRow({ task }: { task: TaskRowData }) {
+  const cardBorder = task.isOverdue
+    ? "border-destructive/40"
+    : task.status === "REJECTED"
+      ? "border-destructive/40 bg-destructive/5"
+      : task.isDueSoon
+        ? "border-amber-300/60"
+        : task.status === "SUBMITTED"
+          ? "border-blue-300/60 bg-blue-50/40 dark:bg-blue-950/10"
+          : "";
+
   return (
-    <Card
-      className={
-        highlight === "overdue"
-          ? "border-destructive/40"
-          : highlight === "soon"
-            ? "border-amber-300/60"
-            : ""
-      }
-    >
+    <Card className={cardBorder}>
       <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex-1 space-y-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <h3 className="font-medium">{task.title}</h3>
             <Badge variant={PRIORITY_VARIANT[task.priority]}>
               {task.priority}
             </Badge>
+            <span className="text-xs text-muted-foreground">
+              · {STATUS_LABEL[task.status]}
+            </span>
           </div>
           {task.description && (
             <p className="text-sm text-muted-foreground">{task.description}</p>
@@ -228,27 +238,50 @@ function TaskRow({
             Due{" "}
             <span
               className={
-                highlight === "overdue"
+                task.isOverdue
                   ? "font-medium text-destructive"
-                  : highlight === "soon"
+                  : task.isDueSoon
                     ? "font-medium text-amber-700 dark:text-amber-300"
                     : ""
               }
             >
-              {task.dueDate.toLocaleDateString(undefined, {
-                weekday: "short",
-                month: "short",
-                day: "numeric",
-              })}
+              {task.dueDateFormatted}
             </span>{" "}
             · from {task.createdBy.name ?? task.createdBy.email}
           </p>
+
+          {task.status === "REJECTED" && task.reviewNote && (
+            <p className="mt-2 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
+              <strong>Admin note:</strong> {task.reviewNote}
+            </p>
+          )}
+          {task.status === "SUBMITTED" && (
+            <p className="mt-2 text-xs text-blue-700 dark:text-blue-300">
+              ⏳ Waiting for admin review.
+            </p>
+          )}
         </div>
-        <div className="flex items-center gap-2 sm:flex-col sm:items-end">
-          <span className="text-xs text-muted-foreground">
-            {STATUS_LABEL[task.status]}
-          </span>
-          <TaskStatusForm taskId={task.id} status={task.status} />
+
+        <div className="flex flex-shrink-0 flex-col items-end gap-2">
+          {/* Submit / re-submit proof when in progress, pending, or rejected. */}
+          {task.status !== "COMPLETED" && task.status !== "SUBMITTED" && (
+            <SubmitProofDialog
+              taskId={task.id}
+              taskTitle={task.title}
+              isResubmit={task.status === "REJECTED"}
+            />
+          )}
+
+          {/* Status flip available only when not yet submitted. */}
+          {(task.status === "PENDING" || task.status === "IN_PROGRESS") && (
+            <TaskStatusForm taskId={task.id} status={task.status} />
+          )}
+
+          {task.status === "COMPLETED" && (
+            <span className="text-xs text-emerald-700 dark:text-emerald-400">
+              ✓ Approved
+            </span>
+          )}
         </div>
       </CardContent>
     </Card>

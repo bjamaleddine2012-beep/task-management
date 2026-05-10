@@ -2,13 +2,17 @@
 
 import { revalidatePath } from "next/cache";
 import type { Session } from "next-auth";
+import { put } from "@vercel/blob";
 
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import {
+  approveProofSchema,
   createTaskSchema,
   deleteTaskSchema,
+  rejectProofSchema,
   setTaskStatusSchema,
+  submitProofSchema,
   updateTaskSchema,
 } from "@/lib/validators/task";
 
@@ -162,6 +166,9 @@ export async function deleteTaskAction(
 }
 
 // ─── User: change status of a task assigned to me ──────────────────────────
+//
+// Users can only flip between PENDING and IN_PROGRESS. To mark something
+// COMPLETED they must upload proof (submitProofAction → admin approves).
 
 export async function setMyTaskStatusAction(
   _prev: TaskActionState,
@@ -181,11 +188,23 @@ export async function setMyTaskStatusAction(
     select: { assignedToId: true },
   });
   if (!task) return { ok: false, error: "Task not found." };
-  if (
-    task.assignedToId !== gate.session.user.id &&
-    gate.session.user.role !== "ADMIN"
-  ) {
+  const isMine = task.assignedToId === gate.session.user.id;
+  const isAdmin = gate.session.user.role === "ADMIN";
+  if (!isMine && !isAdmin) {
     return { ok: false, error: "You can't update someone else's task." };
+  }
+
+  // Non-admins can't self-mark as COMPLETED — they must submit proof.
+  if (
+    !isAdmin &&
+    (parsed.data.status === "COMPLETED" ||
+      parsed.data.status === "SUBMITTED" ||
+      parsed.data.status === "REJECTED")
+  ) {
+    return {
+      ok: false,
+      error: "Upload proof to mark this complete.",
+    };
   }
 
   await prisma.task.update({
@@ -196,4 +215,200 @@ export async function setMyTaskStatusAction(
   revalidatePath("/");
   revalidatePath("/admin/tasks");
   return { ok: true };
+}
+
+// ─── User: upload proof image and submit for admin review ──────────────────
+
+const MAX_PROOF_BYTES = 8 * 1024 * 1024; // 8 MB
+const ALLOWED_PROOF_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/heic",
+  "image/heif",
+]);
+
+export async function submitProofAction(
+  _prev: TaskActionState,
+  formData: FormData,
+): Promise<TaskActionState> {
+  const gate = await requireSession();
+  if (!gate.ok) return { ok: false, error: gate.error };
+
+  const parsed = submitProofSchema.safeParse({ id: formData.get("id") });
+  if (!parsed.success) return { ok: false, error: "Invalid task." };
+
+  const file = formData.get("photo");
+  if (!(file instanceof File) || file.size === 0) {
+    return {
+      ok: false,
+      error: "Pick a photo of the completed work.",
+      fieldErrors: { photo: ["A photo is required"] },
+    };
+  }
+  if (!ALLOWED_PROOF_TYPES.has(file.type)) {
+    return {
+      ok: false,
+      error: "Photo must be a JPEG, PNG, WebP, or HEIC.",
+      fieldErrors: { photo: ["Unsupported file type"] },
+    };
+  }
+  if (file.size > MAX_PROOF_BYTES) {
+    return {
+      ok: false,
+      error: "Photo is too large (8 MB max).",
+      fieldErrors: { photo: ["Too large"] },
+    };
+  }
+
+  const task = await prisma.task.findUnique({
+    where: { id: parsed.data.id },
+    select: {
+      id: true,
+      assignedToId: true,
+      status: true,
+    },
+  });
+  if (!task) return { ok: false, error: "Task not found." };
+  if (task.assignedToId !== gate.session.user.id) {
+    return { ok: false, error: "This task isn't assigned to you." };
+  }
+  if (task.status === "COMPLETED") {
+    return { ok: false, error: "This task is already completed." };
+  }
+
+  // Upload to Vercel Blob. Filename is namespaced per-task so re-submissions
+  // don't collide.
+  const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
+  const key = `task-proofs/${task.id}/${Date.now()}.${ext}`;
+
+  let blobUrl: string;
+  try {
+    const blob = await put(key, file, {
+      access: "public",
+      addRandomSuffix: false,
+    });
+    blobUrl = blob.url;
+  } catch (err) {
+    console.error("[submitProofAction] blob upload failed:", err);
+    return {
+      ok: false,
+      error:
+        "Couldn't upload the photo. The Blob store may not be configured yet.",
+    };
+  }
+
+  await prisma.task.update({
+    where: { id: task.id },
+    data: {
+      status: "SUBMITTED",
+      proofImageUrl: blobUrl,
+      proofSubmittedAt: new Date(),
+      // Clear any previous review on resubmit.
+      reviewedAt: null,
+      reviewedById: null,
+      reviewNote: null,
+    },
+  });
+
+  revalidatePath("/");
+  revalidatePath("/admin/tasks");
+  return { ok: true, message: "Submitted for review." };
+}
+
+// ─── Admin: approve a submitted proof → COMPLETED ──────────────────────────
+
+export async function approveProofAction(
+  _prev: TaskActionState,
+  formData: FormData,
+): Promise<TaskActionState> {
+  const gate = await requireAdmin();
+  if (!gate.ok) return { ok: false, error: gate.error };
+
+  const parsed = approveProofSchema.safeParse({
+    id: formData.get("id"),
+    note: formData.get("note") || undefined,
+  });
+  if (!parsed.success) return { ok: false, error: "Invalid input." };
+
+  const task = await prisma.task.findUnique({
+    where: { id: parsed.data.id },
+    select: { status: true },
+  });
+  if (!task) return { ok: false, error: "Task not found." };
+  if (task.status !== "SUBMITTED") {
+    return {
+      ok: false,
+      error: "This task isn't waiting for review.",
+    };
+  }
+
+  await prisma.task.update({
+    where: { id: parsed.data.id },
+    data: {
+      status: "COMPLETED",
+      reviewedAt: new Date(),
+      reviewedById: gate.session.user.id,
+      reviewNote: parsed.data.note,
+    },
+  });
+
+  revalidatePath("/admin/tasks");
+  revalidatePath("/");
+  return { ok: true, message: "Approved." };
+}
+
+// ─── Admin: reject a submitted proof → REJECTED ────────────────────────────
+
+export async function rejectProofAction(
+  _prev: TaskActionState,
+  formData: FormData,
+): Promise<TaskActionState> {
+  const gate = await requireAdmin();
+  if (!gate.ok) return { ok: false, error: gate.error };
+
+  const parsed = rejectProofSchema.safeParse({
+    id: formData.get("id"),
+    note: formData.get("note"),
+  });
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: "Please add a reason for rejection.",
+      fieldErrors: parsed.error.issues.reduce<Record<string, string[]>>(
+        (acc, issue) => {
+          const key = issue.path.join(".") || "_root";
+          (acc[key] ??= []).push(issue.message);
+          return acc;
+        },
+        {},
+      ),
+    };
+  }
+
+  const task = await prisma.task.findUnique({
+    where: { id: parsed.data.id },
+    select: { status: true },
+  });
+  if (!task) return { ok: false, error: "Task not found." };
+  if (task.status !== "SUBMITTED") {
+    return {
+      ok: false,
+      error: "This task isn't waiting for review.",
+    };
+  }
+
+  await prisma.task.update({
+    where: { id: parsed.data.id },
+    data: {
+      status: "REJECTED",
+      reviewedAt: new Date(),
+      reviewedById: gate.session.user.id,
+      reviewNote: parsed.data.note,
+    },
+  });
+
+  revalidatePath("/admin/tasks");
+  revalidatePath("/");
+  return { ok: true, message: "Rejected." };
 }

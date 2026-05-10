@@ -1,6 +1,22 @@
 import { z } from "zod";
 import { TaskPriority, TaskStatus } from "@prisma/client";
 
+// Accepts either YYYY-MM-DD or YYYY-MM-DDTHH:mm (datetime-local input).
+const dueDateString = z
+  .string()
+  .min(1, "Due date is required")
+  .transform((s, ctx) => {
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Invalid date",
+      });
+      return z.NEVER;
+    }
+    return d;
+  });
+
 export const createTaskSchema = z.object({
   title: z
     .string()
@@ -13,20 +29,7 @@ export const createTaskSchema = z.object({
     .max(2000, "Description is too long")
     .optional()
     .or(z.literal("").transform(() => undefined)),
-  dueDate: z
-    .string()
-    .min(1, "Due date is required")
-    .transform((s, ctx) => {
-      const d = new Date(s);
-      if (Number.isNaN(d.getTime())) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Invalid date",
-        });
-        return z.NEVER;
-      }
-      return d;
-    }),
+  dueDate: dueDateString,
   priority: z.nativeEnum(TaskPriority),
   assignedToId: z.string().min(1, "Assignee is required"),
 });
@@ -53,6 +56,34 @@ export const updateTaskSchema = z.object({
   priority: z.nativeEnum(TaskPriority).optional(),
   status: z.nativeEnum(TaskStatus).optional(),
   assignedToId: z.string().optional(),
+});
+
+// User submits proof for review. Status moves to SUBMITTED.
+// Allowed only when current status is IN_PROGRESS or REJECTED.
+export const submitProofSchema = z.object({
+  id: z.string().min(1),
+});
+
+// Admin approves submitted proof → COMPLETED.
+export const approveProofSchema = z.object({
+  id: z.string().min(1),
+  note: z
+    .string()
+    .trim()
+    .max(500)
+    .optional()
+    .or(z.literal("").transform(() => undefined)),
+});
+
+// Admin rejects submitted proof → REJECTED. Note required (gives user
+// a reason to act on).
+export const rejectProofSchema = z.object({
+  id: z.string().min(1),
+  note: z
+    .string()
+    .trim()
+    .min(1, "Tell the user why so they can fix it")
+    .max(500),
 });
 
 export const deleteTaskSchema = z.object({

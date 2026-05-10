@@ -50,7 +50,20 @@ const PRIORITY_VARIANT: Record<
 const STATUS_LABEL: Record<TaskStatus, string> = {
   PENDING: "Pending",
   IN_PROGRESS: "In progress",
+  SUBMITTED: "Awaiting review",
   COMPLETED: "Done",
+  REJECTED: "Rejected",
+};
+
+const STATUS_VARIANT: Record<
+  TaskStatus,
+  "secondary" | "warning" | "default" | "success" | "destructive"
+> = {
+  PENDING: "secondary",
+  IN_PROGRESS: "default",
+  SUBMITTED: "warning",
+  COMPLETED: "success",
+  REJECTED: "destructive",
 };
 
 export type AdminTaskRow = {
@@ -58,7 +71,7 @@ export type AdminTaskRow = {
   title: string;
   description: string | null;
   dueDateFormatted: string;
-  dueDateISO: string;
+  dueDateLocalInput: string;
   isOverdue: boolean;
   priority: TaskPriority;
   status: TaskStatus;
@@ -129,8 +142,10 @@ export function TasksTable({
                     {t.priority}
                   </Badge>
                 </TableCell>
-                <TableCell className="text-sm text-muted-foreground">
-                  {STATUS_LABEL[t.status]}
+                <TableCell>
+                  <Badge variant={STATUS_VARIANT[t.status]}>
+                    {STATUS_LABEL[t.status]}
+                  </Badge>
                 </TableCell>
                 <TableCell
                   className={
@@ -263,12 +278,12 @@ function EditTaskDialog({
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label htmlFor="edit-dueDate">Due date</Label>
+                <Label htmlFor="edit-dueDate">Due</Label>
                 <Input
                   id="edit-dueDate"
                   name="dueDate"
-                  type="date"
-                  defaultValue={task.dueDateISO}
+                  type="datetime-local"
+                  defaultValue={task.dueDateLocalInput}
                   required
                 />
               </div>
@@ -298,7 +313,9 @@ function EditTaskDialog({
                   <SelectContent>
                     <SelectItem value="PENDING">Pending</SelectItem>
                     <SelectItem value="IN_PROGRESS">In progress</SelectItem>
+                    <SelectItem value="SUBMITTED">Awaiting review</SelectItem>
                     <SelectItem value="COMPLETED">Done</SelectItem>
+                    <SelectItem value="REJECTED">Rejected</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

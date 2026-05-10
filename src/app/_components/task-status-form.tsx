@@ -2,7 +2,6 @@
 
 import * as React from "react";
 import { useActionState } from "react";
-import type { TaskStatus } from "@prisma/client";
 
 import {
   Select,
@@ -13,18 +12,18 @@ import {
 } from "@/components/ui/select";
 import { setMyTaskStatusAction, type TaskActionState } from "@/lib/actions/tasks";
 
-const LABEL: Record<TaskStatus, string> = {
-  PENDING: "Pending",
-  IN_PROGRESS: "In progress",
-  COMPLETED: "Done",
-};
+// Users can only flip between PENDING and IN_PROGRESS from this control.
+// Marking COMPLETED requires submitting a photo for admin review (handled
+// by SubmitProofDialog). SUBMITTED / REJECTED are set by the server on
+// submission and review and aren't user-selectable.
+type SelfSelectableStatus = "PENDING" | "IN_PROGRESS";
 
 export function TaskStatusForm({
   taskId,
   status,
 }: {
   taskId: string;
-  status: TaskStatus;
+  status: SelfSelectableStatus;
 }) {
   const [, action, pending] = useActionState<TaskActionState, FormData>(
     setMyTaskStatusAction,
@@ -49,9 +48,8 @@ export function TaskStatusForm({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="PENDING">{LABEL.PENDING}</SelectItem>
-          <SelectItem value="IN_PROGRESS">{LABEL.IN_PROGRESS}</SelectItem>
-          <SelectItem value="COMPLETED">{LABEL.COMPLETED}</SelectItem>
+          <SelectItem value="PENDING">Pending</SelectItem>
+          <SelectItem value="IN_PROGRESS">In progress</SelectItem>
         </SelectContent>
       </Select>
     </form>

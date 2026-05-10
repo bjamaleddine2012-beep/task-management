@@ -49,11 +49,17 @@ export function CreateTaskDialog({ users }: { users: UserOption[] }) {
   const fieldError = (key: string) =>
     state && !state.ok ? state.fieldErrors?.[key]?.[0] : undefined;
 
-  // Default the date input to today (YYYY-MM-DD).
-  const today = React.useMemo(
-    () => new Date().toISOString().slice(0, 10),
-    [],
-  );
+  // Default the input to "today at 5pm" in the user's local timezone.
+  // datetime-local format is YYYY-MM-DDTHH:mm.
+  const defaultDueAt = React.useMemo(() => {
+    const d = new Date();
+    d.setHours(17, 0, 0, 0);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return (
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+      `T${pad(d.getHours())}:${pad(d.getMinutes())}`
+    );
+  }, []);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -104,13 +110,12 @@ export function CreateTaskDialog({ users }: { users: UserOption[] }) {
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="dueDate">Due date</Label>
+              <Label htmlFor="dueDate">Due</Label>
               <Input
                 id="dueDate"
                 name="dueDate"
-                type="date"
-                defaultValue={today}
-                min={today}
+                type="datetime-local"
+                defaultValue={defaultDueAt}
                 required
               />
               {fieldError("dueDate") && (
