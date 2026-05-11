@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { submitProofAction } from "@/lib/actions/tasks";
+import { CameraCapture } from "./camera-capture";
 
 const ALLOWED = [
   "image/jpeg",
@@ -57,8 +58,6 @@ export function SubmitProofDialog({
   const [includeLocation, setIncludeLocation] = React.useState(true);
   const [progress, setProgress] = React.useState({ done: 0, total: 0 });
 
-  const fileRef = React.useRef<HTMLInputElement>(null);
-
   React.useEffect(() => {
     return () => {
       // Cleanup all preview URLs on unmount.
@@ -73,33 +72,43 @@ export function SubmitProofDialog({
     setStep("idle");
     setError(null);
     setProgress({ done: 0, total: 0 });
-    if (fileRef.current) fileRef.current.value = "";
   };
 
-  const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []);
-    if (files.length === 0) return;
+  const acceptFile = (f: File): StagedFile | null => {
+    if (!ALLOWED.includes(f.type)) {
+      setError(`${f.name}: unsupported format`);
+      return null;
+    }
+    if (f.size > MAX_BYTES) {
+      setError(`${f.name}: too large (16 MB max)`);
+      return null;
+    }
+    return {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      file: f,
+      previewUrl: URL.createObjectURL(f),
+    };
+  };
 
+  const onCameraCapture = (file: File) => {
+    setError(null);
+    if (staged.length >= MAX_PHOTOS) {
+      setError(`Max ${MAX_PHOTOS} photos per submission.`);
+      return;
+    }
+    const sf = acceptFile(file);
+    if (sf) setStaged((prev) => [...prev, sf]);
+  };
+
+  const onFallbackFiles = (files: File[]) => {
+    setError(null);
     const remaining = MAX_PHOTOS - staged.length;
     const accepted: StagedFile[] = [];
     for (const f of files.slice(0, remaining)) {
-      if (!ALLOWED.includes(f.type)) {
-        setError(`${f.name}: unsupported format`);
-        continue;
-      }
-      if (f.size > MAX_BYTES) {
-        setError(`${f.name}: too large (16 MB max)`);
-        continue;
-      }
-      accepted.push({
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        file: f,
-        previewUrl: URL.createObjectURL(f),
-      });
+      const sf = acceptFile(f);
+      if (sf) accepted.push(sf);
     }
     setStaged((prev) => [...prev, ...accepted]);
-    setError(null);
-    if (fileRef.current) fileRef.current.value = "";
   };
 
   const removeStaged = (id: string) => {
@@ -112,7 +121,8 @@ export function SubmitProofDialog({
 
   const captureGeo = async (): Promise<Geo | null> => {
     if (!includeLocation) return null;
-    if (!("geolocation" in navigator)) return null;
+    if (typeof navigator === "undefined" || !("geolocation" in navigator))
+      return null;
     return new Promise<Geo | null>((resolve) => {
       navigator.geolocation.getCurrentPosition(
         (pos) =>
@@ -121,27 +131,23 @@ export function SubmitProofDialog({
             longitude: pos.coords.longitude,
             accuracyMeters: Math.round(pos.coords.accuracy),
           }),
-        () => resolve(null), // user denied — fail open
+        () => resolve(null),
         { enableHighAccuracy: true, timeout: 8000, maximumAge: 30_000 },
       );
     });
   };
 
-  const onSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const onSubmit = async () => {
     if (staged.length === 0) {
-      setError("Pick at least one photo.");
+      setError("Take or pick at least one photo first.");
       return;
     }
     setError(null);
 
     try {
-      // 1. Capture location once for the whole submission. Cheaper than
-      //    once-per-image and accurate enough — the user is in one place.
       setStep("geolocating");
       const geo = await captureGeo();
 
-      // 2. Upload all files in parallel directly to Vercel Blob.
       setStep("uploading");
       setProgress({ done: 0, total: staged.length });
       const capturedAt = new Date().toISOString();
@@ -169,7 +175,6 @@ export function SubmitProofDialog({
         }),
       );
 
-      // 3. Tell the server.
       setStep("saving");
       const result = await submitProofAction({ id: taskId, images: uploaded });
       if (result && !result.ok) {
@@ -213,65 +218,59 @@ export function SubmitProofDialog({
           ) : (
             <Camera className="mr-1 h-4 w-4" />
           )}
-          {isResubmit ? "Resubmit" : "Submit proof"}
+          {isResubmit ? "Resubmit" : "Take photo"}
         </Button>
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>
             {isResubmit ? "Resubmit for review" : "Submit for review"}
           </DialogTitle>
           <DialogDescription>
-            Upload up to {MAX_PHOTOS} photos showing{" "}
+            Take {staged.length === 0 ? "a photo" : "more photos"} showing{" "}
             <span className="font-medium">{taskTitle}</span> is done.
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={onSubmit} className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="photos">Photos</Label>
-            <input
-              ref={fileRef}
-              id="photos"
-              type="file"
-              accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
-              multiple
-              capture="environment"
-              disabled={busy || staged.length >= MAX_PHOTOS}
-              onChange={onFileChange}
-              className="block w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm file:mr-3 file:rounded file:border-0 file:bg-secondary file:px-3 file:py-1 file:text-secondary-foreground hover:file:bg-secondary/80 disabled:opacity-50"
+        <div className="space-y-3">
+          {!busy && staged.length < MAX_PHOTOS && (
+            <CameraCapture
+              onCapture={onCameraCapture}
+              onFallbackFiles={onFallbackFiles}
+              disabled={busy}
             />
-            <p className="text-xs text-muted-foreground">
-              JPEG, PNG, WebP, or HEIC. 16 MB per photo. {staged.length}/
-              {MAX_PHOTOS} added.
-            </p>
-          </div>
+          )}
 
           {staged.length > 0 && (
-            <div className="grid grid-cols-3 gap-2">
-              {staged.map((s) => (
-                <div
-                  key={s.id}
-                  className="group relative aspect-square overflow-hidden rounded-md border bg-muted"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={s.previewUrl}
-                    alt=""
-                    className="h-full w-full object-cover"
-                  />
-                  {!busy && (
-                    <button
-                      type="button"
-                      onClick={() => removeStaged(s.id)}
-                      className="absolute right-1 top-1 rounded-full bg-black/60 p-1 text-white opacity-0 transition-opacity hover:bg-black/80 group-hover:opacity-100"
-                      aria-label="Remove"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  )}
-                </div>
-              ))}
+            <div>
+              <Label className="mb-1.5 block text-xs uppercase tracking-wide text-muted-foreground">
+                Captured · {staged.length}/{MAX_PHOTOS}
+              </Label>
+              <div className="grid grid-cols-3 gap-2">
+                {staged.map((s) => (
+                  <div
+                    key={s.id}
+                    className="group relative aspect-square overflow-hidden rounded-md border bg-muted"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={s.previewUrl}
+                      alt=""
+                      className="h-full w-full object-cover"
+                    />
+                    {!busy && (
+                      <button
+                        type="button"
+                        onClick={() => removeStaged(s.id)}
+                        className="absolute right-1 top-1 rounded-full bg-black/70 p-1 text-white opacity-100 transition-opacity hover:bg-black/90"
+                        aria-label="Remove"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
@@ -298,31 +297,35 @@ export function SubmitProofDialog({
               {error}
             </p>
           )}
+        </div>
 
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => {
-                setOpen(false);
-                reset();
-              }}
-              disabled={busy}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" disabled={busy || staged.length === 0}>
-              {busy && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
-              {step === "geolocating"
-                ? "Locating…"
-                : step === "uploading"
-                  ? "Uploading…"
-                  : step === "saving"
-                    ? "Saving…"
-                    : `Submit ${staged.length} photo${staged.length === 1 ? "" : "s"}`}
-            </Button>
-          </DialogFooter>
-        </form>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => {
+              setOpen(false);
+              reset();
+            }}
+            disabled={busy}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={onSubmit}
+            disabled={busy || staged.length === 0}
+          >
+            {busy && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
+            {step === "geolocating"
+              ? "Locating…"
+              : step === "uploading"
+                ? "Uploading…"
+                : step === "saving"
+                  ? "Saving…"
+                  : `Submit ${staged.length || ""} photo${staged.length === 1 ? "" : "s"}`.trim()}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
