@@ -276,7 +276,7 @@ function EditTaskDialog({
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label htmlFor="edit-dueDate">Due</Label>
                 <Input
@@ -303,7 +303,7 @@ function EditTaskDialog({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label htmlFor="edit-status">Status</Label>
                 <Select name="status" defaultValue={task.status}>

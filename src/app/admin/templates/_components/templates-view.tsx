@@ -345,7 +345,7 @@ function TemplateFormDialog({
             <input type="hidden" name="id" value={template.id} />
           )}
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="t-name">Template name</Label>
               <Input
@@ -411,7 +411,7 @@ function TemplateFormDialog({
             />
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="space-y-1.5">
               <Label htmlFor="t-assignee">Default assignee</Label>
               <Select
