@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowRight, ListChecks, Users } from "lucide-react";
 
+import { PushNotifications } from "@/components/push-notifications";
 import { prisma } from "@/lib/prisma";
 import {
   Card,
@@ -45,6 +46,8 @@ export default async function AdminOverviewPage() {
           Manage users and assigned work across the team.
         </p>
       </header>
+
+      <PushNotifications />
 
       <div className="grid gap-4 sm:grid-cols-2">
         {stats.map(({ label, value, sub, href, icon: Icon }) => (

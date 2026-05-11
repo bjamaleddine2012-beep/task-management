@@ -61,12 +61,13 @@ model User {
   accounts      Account[]
   sessions      Session[]
 
-  assignedTasks       Task[]         @relation("AssignedTasks")
-  createdTasks        Task[]         @relation("CreatedTasks")
-  reviewedTasks       Task[]         @relation("ReviewedTasks")
-  completedSubtasks   Subtask[]      @relation("CompletedSubtasks")
-  createdTemplates    TaskTemplate[] @relation("CreatedTemplates")
-  defaultedTemplates  TaskTemplate[] @relation("TemplateDefaultAssignee")
+  assignedTasks       Task[]             @relation("AssignedTasks")
+  createdTasks        Task[]             @relation("CreatedTasks")
+  reviewedTasks       Task[]             @relation("ReviewedTasks")
+  completedSubtasks   Subtask[]          @relation("CompletedSubtasks")
+  createdTemplates    TaskTemplate[]     @relation("CreatedTemplates")
+  defaultedTemplates  TaskTemplate[]     @relation("TemplateDefaultAssignee")
+  pushSubscriptions   PushSubscription[]
 
   @@index([role])
 }
@@ -217,6 +218,24 @@ model TaskProofImage {
   uploadedAt     DateTime @default(now())
 
   @@index([taskId])
+}
+
+// One row per browser/device push subscription. A user can have many
+// (e.g. installed on iPhone + Android phone + desktop Chrome).
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Endpoint URL from the browser's push service. Unique per device.
+  endpoint  String   @unique
+  // ECDH key from the subscription, base64-url-encoded.
+  p256dh    String
+  // Auth secret from the subscription, base64-url-encoded.
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
 }
 
 model Subtask {

@@ -15,6 +15,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { PushNotifications } from "@/components/push-notifications";
 import { SubmitProofDialog } from "./_components/submit-proof-dialog";
 import { SubtaskChecklist, type SubtaskItem } from "./_components/subtask-checklist";
 import { TaskStatusForm } from "./_components/task-status-form";
@@ -124,6 +125,10 @@ export default async function DashboardPage() {
           </form>
         </div>
       </header>
+
+      <div className="mb-6">
+        <PushNotifications />
+      </div>
 
       {(overdue.length > 0 || dueSoon.length > 0) && (
         <div className="mb-6 grid gap-4 sm:grid-cols-2">

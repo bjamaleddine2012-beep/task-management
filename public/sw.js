@@ -1,21 +1,57 @@
-// Minimal service worker — exists to make the site installable as a PWA on
-// Android / iOS. Doesn't try to cache routes (server actions and live data
-// don't cache safely without a more careful strategy). Future: add a stale-
-// while-revalidate cache for static assets.
+// Service worker — handles PWA install eligibility AND Web Push.
+//
+// Push flow:
+//   1. Server sends a push payload via web-push (POST to the user's
+//      browser endpoint).
+//   2. The browser wakes this worker and fires the `push` event.
+//   3. We show a notification with the payload's title/body.
+//   4. Tap → opens the URL we attached, focusing an existing tab if any.
 
-self.addEventListener("install", (event) => {
-  // Activate immediately on first install.
+self.addEventListener("install", () => {
   self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
-  // Take control of any open tabs.
   event.waitUntil(self.clients.claim());
 });
 
-// Pass-through fetch handler. Browsers require a fetch listener to consider
-// the SW "installable" for PWA prompts on some platforms.
-self.addEventListener("fetch", (event) => {
-  // Network only — no offline support yet.
-  return;
+self.addEventListener("fetch", () => {
+  // No offline caching strategy yet — pass through.
+});
+
+self.addEventListener("push", (event) => {
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch {
+    payload = { title: "Task Management", body: event.data?.text() || "" };
+  }
+  const title = payload.title || "Task Management";
+  const options = {
+    body: payload.body || "",
+    icon: "/icon-192.png",
+    badge: "/icon-192.png",
+    tag: payload.tag, // collapses duplicates
+    data: { url: payload.url || "/" },
+    requireInteraction: payload.requireInteraction === true,
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = event.notification.data?.url || "/";
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((clientList) => {
+        // Focus an existing tab if its URL prefix matches.
+        for (const client of clientList) {
+          if (client.url.includes(url) && "focus" in client) {
+            return client.focus();
+          }
+        }
+        return self.clients.openWindow(url);
+      }),
+  );
 });

@@ -6,6 +6,7 @@ import type { Session } from "next-auth";
 
 import { auth } from "@/auth";
 import { reviewProofWithAi } from "@/lib/ai-review";
+import { notifyAdmins, notifyUser } from "@/lib/notify";
 import { prisma } from "@/lib/prisma";
 import {
   approveProofSchema,
@@ -113,7 +114,7 @@ export async function createTaskAction(
     };
   }
 
-  await prisma.task.create({
+  const created = await prisma.task.create({
     data: {
       title,
       description,
@@ -131,6 +132,15 @@ export async function createTaskAction(
             }
           : undefined,
     },
+  });
+
+  // Notify the assignee. Fire-and-forget — if push isn't set up or the
+  // user has no subscriptions, this no-ops silently.
+  void notifyUser(assignedToId, {
+    title: "New task assigned",
+    body: title,
+    url: "/",
+    tag: `task:${created.id}`,
   });
 
   revalidatePath("/admin/tasks");
@@ -327,6 +337,14 @@ export async function submitProofAction(
     }),
   ]);
 
+  // Notify all admins that something is awaiting review.
+  void notifyAdmins({
+    title: "New submission to review",
+    body: task.title,
+    url: "/admin/tasks",
+    tag: `submit:${task.id}`,
+  });
+
   // AI review runs AFTER the response is sent so it can't time out the
   // submission. The Vercel runtime keeps the worker alive for `after()`
   // continuations. Verdict is patched onto the task whenever it completes
@@ -389,7 +407,7 @@ export async function approveProofAction(
     };
   }
 
-  await prisma.task.update({
+  const updated = await prisma.task.update({
     where: { id: parsed.data.id },
     data: {
       status: "COMPLETED",
@@ -397,6 +415,14 @@ export async function approveProofAction(
       reviewedById: gate.session.user.id,
       reviewNote: parsed.data.note,
     },
+    select: { assignedToId: true, title: true },
+  });
+
+  void notifyUser(updated.assignedToId, {
+    title: "Task approved ✓",
+    body: updated.title,
+    url: "/",
+    tag: `review:${parsed.data.id}`,
   });
 
   revalidatePath("/admin/tasks");
@@ -444,7 +470,7 @@ export async function rejectProofAction(
     };
   }
 
-  await prisma.task.update({
+  const updated = await prisma.task.update({
     where: { id: parsed.data.id },
     data: {
       status: "REJECTED",
@@ -452,6 +478,14 @@ export async function rejectProofAction(
       reviewedById: gate.session.user.id,
       reviewNote: parsed.data.note,
     },
+    select: { assignedToId: true, title: true },
+  });
+
+  void notifyUser(updated.assignedToId, {
+    title: "Resubmission needed",
+    body: `${updated.title} — ${parsed.data.note.slice(0, 80)}`,
+    url: "/",
+    tag: `review:${parsed.data.id}`,
   });
 
   revalidatePath("/admin/tasks");
