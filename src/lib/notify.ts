@@ -37,6 +37,32 @@ export type NotificationPayload = {
   tag?: string;
 };
 
+// Compute how many items demand this user's attention right now.
+//   Regular users: count of their non-completed tasks.
+//   Admins: that + count of all submissions awaiting review.
+// Used to set the home-screen icon badge (red bubble).
+export async function getBadgeCount(userId: string): Promise<number> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { role: true },
+  });
+  if (!user) return 0;
+
+  const myOpen = await prisma.task.count({
+    where: {
+      assignedToId: userId,
+      status: { not: "COMPLETED" },
+    },
+  });
+
+  if (user.role !== "ADMIN") return myOpen;
+
+  const toReview = await prisma.task.count({
+    where: { status: "SUBMITTED" },
+  });
+  return myOpen + toReview;
+}
+
 export async function notifyUser(
   userId: string,
   payload: NotificationPayload,
@@ -46,7 +72,10 @@ export async function notifyUser(
   const subs = await prisma.pushSubscription.findMany({ where: { userId } });
   if (subs.length === 0) return;
 
-  const body = JSON.stringify(payload);
+  // Compute the live badge count so the home-screen icon bubble updates
+  // even if the user never opens the app.
+  const badge = await getBadgeCount(userId);
+  const body = JSON.stringify({ ...payload, badge });
   await Promise.all(
     subs.map(async (sub) => {
       try {

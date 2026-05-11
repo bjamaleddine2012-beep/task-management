@@ -35,7 +35,24 @@ self.addEventListener("push", (event) => {
     data: { url: payload.url || "/" },
     requireInteraction: payload.requireInteraction === true,
   };
-  event.waitUntil(self.registration.showNotification(title, options));
+
+  const work = [self.registration.showNotification(title, options)];
+
+  // Red bubble on the app icon. Same API WhatsApp / iMessage use on Android
+  // and Safari PWAs. typeof check covers older browsers gracefully.
+  if (
+    typeof payload.badge === "number" &&
+    typeof navigator !== "undefined" &&
+    "setAppBadge" in navigator
+  ) {
+    work.push(
+      payload.badge > 0
+        ? navigator.setAppBadge(payload.badge)
+        : navigator.clearAppBadge(),
+    );
+  }
+
+  event.waitUntil(Promise.all(work));
 });
 
 self.addEventListener("notificationclick", (event) => {

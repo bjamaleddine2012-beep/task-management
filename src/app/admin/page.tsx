@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { ArrowRight, ListChecks, Users } from "lucide-react";
 
+import { auth } from "@/auth";
+import { BadgeUpdater } from "@/components/badge-updater";
 import { PushNotifications } from "@/components/push-notifications";
+import { getBadgeCount } from "@/lib/notify";
 import { prisma } from "@/lib/prisma";
 import {
   Card,
@@ -14,12 +17,15 @@ import {
 export const dynamic = "force-dynamic";
 
 export default async function AdminOverviewPage() {
-  const [userCount, adminCount, taskCount, openTaskCount] = await Promise.all([
-    prisma.user.count(),
-    prisma.user.count({ where: { role: "ADMIN" } }),
-    prisma.task.count(),
-    prisma.task.count({ where: { status: { not: "COMPLETED" } } }),
-  ]);
+  const session = await auth();
+  const [userCount, adminCount, taskCount, openTaskCount, badgeCount] =
+    await Promise.all([
+      prisma.user.count(),
+      prisma.user.count({ where: { role: "ADMIN" } }),
+      prisma.task.count(),
+      prisma.task.count({ where: { status: { not: "COMPLETED" } } }),
+      session?.user?.id ? getBadgeCount(session.user.id) : Promise.resolve(0),
+    ]);
 
   const stats = [
     {
@@ -40,6 +46,7 @@ export default async function AdminOverviewPage() {
 
   return (
     <div className="space-y-8">
+      <BadgeUpdater count={badgeCount} />
       <header className="flex flex-col gap-1">
         <h1 className="text-2xl font-semibold tracking-tight">Overview</h1>
         <p className="text-sm text-muted-foreground">

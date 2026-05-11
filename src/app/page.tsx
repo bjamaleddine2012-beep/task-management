@@ -15,7 +15,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { BadgeUpdater } from "@/components/badge-updater";
 import { PushNotifications } from "@/components/push-notifications";
+import { getBadgeCount } from "@/lib/notify";
 import { SubmitProofDialog } from "./_components/submit-proof-dialog";
 import { SubtaskChecklist, type SubtaskItem } from "./_components/subtask-checklist";
 import { TaskStatusForm } from "./_components/task-status-form";
@@ -89,11 +91,13 @@ export default async function DashboardPage() {
 
   const open = formatted.filter((t) => t.status !== "COMPLETED");
   const done = formatted.filter((t) => t.status === "COMPLETED");
+  const badgeCount = await getBadgeCount(session.user.id);
   const overdue = open.filter((t) => t.isOverdue);
   const dueSoon = open.filter((t) => t.isDueSoon);
 
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
+      <BadgeUpdater count={badgeCount} />
       <header className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">My tasks</h1>
