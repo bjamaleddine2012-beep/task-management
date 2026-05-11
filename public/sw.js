@@ -52,6 +52,16 @@ self.addEventListener("push", (event) => {
     );
   }
 
+  // Tell any open tabs to re-fetch their data, so the task list updates
+  // live (without the user pulling to refresh) when a push arrives.
+  work.push(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((clients) => {
+        for (const c of clients) c.postMessage({ type: "data-changed" });
+      }),
+  );
+
   event.waitUntil(Promise.all(work));
 });
 
