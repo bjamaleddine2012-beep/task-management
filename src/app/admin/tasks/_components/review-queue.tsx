@@ -6,6 +6,7 @@ import { Check, ExternalLink, Loader2, MapPin, X } from "lucide-react";
 import type { TaskPriority } from "@prisma/client";
 
 import { Badge } from "@/components/ui/badge";
+import { fireConfetti } from "@/components/confetti";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { Button } from "@/components/ui/button";
 import {
@@ -156,6 +157,12 @@ function ReviewDialog({
     TaskActionState,
     FormData
   >(rejectProofAction, null);
+
+  React.useEffect(() => {
+    if (approveState?.ok) {
+      void fireConfetti({ particleCount: 120 });
+    }
+  }, [approveState]);
 
   React.useEffect(() => {
     if (approveState?.ok || rejectState?.ok) onClose();

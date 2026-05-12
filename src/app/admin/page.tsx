@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ArrowRight, ListChecks, Users } from "lucide-react";
 
 import { auth } from "@/auth";
+import { ActivityFeed } from "@/components/activity-feed";
 import { BadgeUpdater } from "@/components/badge-updater";
 import { PushNotifications } from "@/components/push-notifications";
 import { getBadgeCount } from "@/lib/notify";
@@ -75,6 +76,21 @@ export default async function AdminOverviewPage() {
           </Link>
         ))}
       </div>
+
+      <section>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-medium text-muted-foreground">
+            Recent activity
+          </h2>
+          <Link
+            href="/activity"
+            className="text-xs text-muted-foreground hover:text-foreground"
+          >
+            View all →
+          </Link>
+        </div>
+        <ActivityFeed limit={8} />
+      </section>
     </div>
   );
 }

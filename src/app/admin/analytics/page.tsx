@@ -6,7 +6,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Avatar } from "@/components/avatar";
 import { Badge } from "@/components/ui/badge";
+import { getStreak } from "@/lib/stats";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +52,9 @@ export default async function AdminAnalyticsPage() {
         id: true,
         name: true,
         email: true,
+        avatarColor: true,
+        avatarEmoji: true,
+        points: true,
         _count: {
           select: {
             assignedTasks: true,
@@ -84,25 +89,37 @@ export default async function AdminAnalyticsPage() {
       ? Math.round((avgReviewMs[0].avg_ms / 3_600_000) * 10) / 10
       : null;
 
-  const userStats = perUser
-    .map((u) => {
+  const userStats = await Promise.all(
+    perUser.map(async (u) => {
       const tasks = u.assignedTasks;
       const total = tasks.length;
       const done = tasks.filter((t) => t.status === "COMPLETED").length;
       const overdue = tasks.filter(
         (t) => t.status !== "COMPLETED" && t.dueDate < now,
       ).length;
+      const streak = await getStreak(u.id);
       return {
         id: u.id,
         name: u.name ?? u.email,
+        avatarColor: u.avatarColor,
+        avatarEmoji: u.avatarEmoji,
+        points: u.points,
+        streak,
         total,
         done,
         overdue,
         rate: total > 0 ? Math.round((done / total) * 100) : 0,
       };
-    })
-    .filter((u) => u.total > 0)
-    .sort((a, b) => b.total - a.total);
+    }),
+  );
+
+  const ranked = {
+    byPoints: [...userStats].sort((a, b) => b.points - a.points).slice(0, 5),
+    byDone: [...userStats].sort((a, b) => b.done - a.done).slice(0, 5),
+    byStreak: [...userStats].sort((a, b) => b.streak - a.streak).slice(0, 5),
+  };
+
+  const onlyActive = userStats.filter((u) => u.total > 0).sort((a, b) => b.total - a.total);
 
   return (
     <div className="space-y-8">
@@ -185,9 +202,20 @@ export default async function AdminAnalyticsPage() {
 
       <section>
         <h2 className="mb-3 text-sm font-medium text-muted-foreground">
+          Leaderboard · all time
+        </h2>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <LeaderCard title="Most points" emoji="🏆" rows={ranked.byPoints.map((u) => ({ user: u, value: u.points, unit: "pts" }))} />
+          <LeaderCard title="Most tasks completed" emoji="✅" rows={ranked.byDone.map((u) => ({ user: u, value: u.done, unit: "" }))} />
+          <LeaderCard title="Longest active streak" emoji="🔥" rows={ranked.byStreak.map((u) => ({ user: u, value: u.streak, unit: "d" }))} />
+        </div>
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-sm font-medium text-muted-foreground">
           Per user
         </h2>
-        {userStats.length === 0 ? (
+        {onlyActive.length === 0 ? (
           <Card>
             <CardContent className="p-6 text-sm text-muted-foreground">
               No tasks assigned yet.
@@ -206,7 +234,7 @@ export default async function AdminAnalyticsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {userStats.map((u) => (
+                {onlyActive.map((u) => (
                   <tr key={u.id}>
                     <td className="px-3 py-2 font-medium">{u.name}</td>
                     <td className="px-3 py-2">{u.total}</td>
@@ -272,6 +300,72 @@ function Stat({
           {sub}
         </CardContent>
       )}
+    </Card>
+  );
+}
+
+type LeaderRow = {
+  user: {
+    id: string;
+    name: string;
+    avatarColor: string | null;
+    avatarEmoji: string | null;
+  };
+  value: number;
+  unit: string;
+};
+
+function LeaderCard({
+  title,
+  emoji,
+  rows,
+}: {
+  title: string;
+  emoji: string;
+  rows: LeaderRow[];
+}) {
+  // Filter out anyone tied at 0 so the card doesn't list everyone in
+  // small families when nobody has earned anything yet.
+  const trimmed = rows.filter((r) => r.value > 0);
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardDescription className="flex items-center gap-1">
+          <span aria-hidden>{emoji}</span> {title}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="pt-0">
+        {trimmed.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            No data yet.
+          </p>
+        ) : (
+          <ol className="space-y-2">
+            {trimmed.map((r, i) => (
+              <li key={r.user.id} className="flex items-center gap-2">
+                <span className="w-4 shrink-0 text-center text-xs font-medium text-muted-foreground">
+                  {i + 1}
+                </span>
+                <Avatar
+                  name={r.user.name}
+                  emoji={r.user.avatarEmoji}
+                  color={r.user.avatarColor}
+                  size="sm"
+                />
+                <span className="flex-1 truncate text-sm">{r.user.name}</span>
+                <span className="tabular-nums text-sm font-medium">
+                  {r.value}
+                  {r.unit && (
+                    <span className="ml-0.5 text-xs text-muted-foreground">
+                      {r.unit}
+                    </span>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ol>
+        )}
+      </CardContent>
     </Card>
   );
 }

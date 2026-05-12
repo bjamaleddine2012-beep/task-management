@@ -59,6 +59,7 @@ export default async function AdminTasksPage({
             id: true,
             body: true,
             createdAt: true,
+            reactions: { select: { emoji: true, userId: true } },
             user: {
               select: {
                 id: true,
@@ -151,6 +152,7 @@ export default async function AdminTasksPage({
       id: c.id,
       body: c.body,
       createdAtFormatted: commentFmt.format(c.createdAt),
+      reactions: c.reactions,
       user: {
         id: c.user.id,
         name: c.user.name,

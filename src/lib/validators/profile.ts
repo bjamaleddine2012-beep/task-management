@@ -33,6 +33,15 @@ export const addCommentSchema = z.object({
   body: z.string().trim().min(1, "Say something").max(1000),
 });
 
+// Toggle a reaction on a comment. Allowed emoji set is enforced here so
+// the UI can't store arbitrary strings.
+const ALLOWED_REACTIONS = ["👍", "❤️", "🎉", "🔥", "🚀", "🤔"] as const;
+export const toggleReactionSchema = z.object({
+  commentId: z.string().min(1),
+  emoji: z.enum(ALLOWED_REACTIONS),
+});
+export const REACTION_EMOJI = ALLOWED_REACTIONS;
+
 export const deleteCommentSchema = z.object({
   id: z.string().min(1),
 });

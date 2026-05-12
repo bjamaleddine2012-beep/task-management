@@ -83,6 +83,7 @@ model User {
   defaultedTemplates  TaskTemplate[]     @relation("TemplateDefaultAssignee")
   pushSubscriptions   PushSubscription[]
   taskComments        TaskComment[]
+  commentReactions    CommentReaction[]
   activities          TaskActivity[]     @relation("ActorActivities")
 
   @@index([role])
@@ -294,8 +295,26 @@ model TaskComment {
   body      String
   createdAt DateTime @default(now())
 
+  reactions CommentReaction[]
+
   @@index([taskId, createdAt])
   @@index([userId])
+}
+
+// Emoji reactions on a comment. (commentId, userId, emoji) is unique so
+// a single user can't double-react with the same emoji; they CAN react
+// with different emoji on the same comment.
+model CommentReaction {
+  id        String      @id @default(cuid())
+  commentId String
+  comment   TaskComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emoji     String
+  createdAt DateTime    @default(now())
+
+  @@unique([commentId, userId, emoji])
+  @@index([commentId])
 }
 
 model Subtask {

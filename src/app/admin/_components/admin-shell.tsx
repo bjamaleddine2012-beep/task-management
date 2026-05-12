@@ -4,6 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  Activity,
   BarChart3,
   LayoutDashboard,
   Library,
@@ -24,6 +25,7 @@ const NAV = [
   { href: "/admin/tasks", label: "Tasks", icon: ListChecks },
   { href: "/admin/templates", label: "Templates", icon: Library },
   { href: "/admin/analytics", label: "Analytics", icon: BarChart3 },
+  { href: "/activity", label: "Activity", icon: Activity },
   { href: "/profile", label: "Profile", icon: User },
 ] as const;
 

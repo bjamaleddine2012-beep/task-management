@@ -19,6 +19,7 @@ import {
 import { BadgeUpdater } from "@/components/badge-updater";
 import { PushNotifications } from "@/components/push-notifications";
 import { getBadgeCount } from "@/lib/notify";
+import { ActivityFeed } from "@/components/activity-feed";
 import { CommentThread, type CommentItem } from "./_components/comment-thread";
 import { ProofThumbnails } from "./_components/proof-thumbnails";
 import { SubmitProofDialog } from "./_components/submit-proof-dialog";
@@ -81,6 +82,7 @@ export default async function DashboardPage() {
             id: true,
             body: true,
             createdAt: true,
+            reactions: { select: { emoji: true, userId: true } },
             user: {
               select: {
                 id: true,
@@ -126,6 +128,7 @@ export default async function DashboardPage() {
         id: c.id,
         body: c.body,
         createdAtFormatted: commentFmt.format(c.createdAt),
+        reactions: c.reactions,
         user: {
           id: c.user.id,
           name: c.user.name,
@@ -254,6 +257,21 @@ export default async function DashboardPage() {
           ))}
         </Section>
       )}
+
+      <section className="mt-8">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-medium text-muted-foreground">
+            Recent activity
+          </h2>
+          <Link
+            href="/activity"
+            className="text-xs text-muted-foreground hover:text-foreground"
+          >
+            View all →
+          </Link>
+        </div>
+        <ActivityFeed limit={5} userId={session.user.id} />
+      </section>
     </div>
   );
 }

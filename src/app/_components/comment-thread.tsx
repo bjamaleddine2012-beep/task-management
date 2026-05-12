@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTransition } from "react";
-import { Loader2, Send, Trash2 } from "lucide-react";
+import { Loader2, Send, SmilePlus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Avatar } from "@/components/avatar";
@@ -10,12 +10,22 @@ import { Button } from "@/components/ui/button";
 import {
   addCommentAction,
   deleteCommentAction,
+  toggleReactionAction,
 } from "@/lib/actions/profile";
+import { cn } from "@/lib/utils";
+
+const REACTION_EMOJI = ["👍", "❤️", "🎉", "🔥", "🚀", "🤔"] as const;
+
+export type CommentReaction = {
+  emoji: string;
+  userId: string;
+};
 
 export type CommentItem = {
   id: string;
   body: string;
   createdAtFormatted: string;
+  reactions: CommentReaction[];
   user: {
     id: string;
     name: string | null;
@@ -74,34 +84,12 @@ export function CommentThread({
 
       <ul className="space-y-2">
         {comments.map((c) => (
-          <li
+          <CommentRow
             key={c.id}
-            className="flex items-start gap-2 rounded-md border bg-background p-2.5"
-          >
-            <Avatar
-              name={c.user.name ?? c.user.email}
-              emoji={c.user.avatarEmoji}
-              color={c.user.avatarColor}
-              size="sm"
-            />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-baseline gap-2">
-                <span className="text-sm font-medium">
-                  {c.user.name ?? c.user.email}
-                </span>
-                {c.user.isAdmin && (
-                  <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-primary">
-                    admin
-                  </span>
-                )}
-                <span className="text-xs text-muted-foreground">
-                  {c.createdAtFormatted}
-                </span>
-              </div>
-              <p className="mt-0.5 whitespace-pre-wrap text-sm">{c.body}</p>
-            </div>
-            {canDelete(c.user.id) && <DeleteButton id={c.id} />}
-          </li>
+            comment={c}
+            currentUserId={currentUserId}
+            canDelete={canDelete(c.user.id)}
+          />
         ))}
       </ul>
 
@@ -123,6 +111,138 @@ export function CommentThread({
         </Button>
       </form>
     </div>
+  );
+}
+
+function CommentRow({
+  comment,
+  currentUserId,
+  canDelete,
+}: {
+  comment: CommentItem;
+  currentUserId: string;
+  canDelete: boolean;
+}) {
+  const [pickerOpen, setPickerOpen] = React.useState(false);
+  const [pending, startReacting] = useTransition();
+
+  // Group reactions by emoji and capture whether the current user reacted.
+  const grouped = React.useMemo(() => {
+    const m = new Map<string, { count: number; mine: boolean }>();
+    for (const r of comment.reactions) {
+      const cur = m.get(r.emoji) ?? { count: 0, mine: false };
+      cur.count += 1;
+      if (r.userId === currentUserId) cur.mine = true;
+      m.set(r.emoji, cur);
+    }
+    return Array.from(m.entries());
+  }, [comment.reactions, currentUserId]);
+
+  const toggle = (emoji: string) => {
+    startReacting(async () => {
+      const fd = new FormData();
+      fd.set("commentId", comment.id);
+      fd.set("emoji", emoji);
+      const res = await toggleReactionAction(null, fd);
+      if (res && !res.ok) toast.error(res.error);
+      setPickerOpen(false);
+    });
+  };
+
+  return (
+    <li className="flex items-start gap-2 rounded-md border bg-background p-2.5">
+      <Avatar
+        name={comment.user.name ?? comment.user.email}
+        emoji={comment.user.avatarEmoji}
+        color={comment.user.avatarColor}
+        size="sm"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <span className="text-sm font-medium">
+            {comment.user.name ?? comment.user.email}
+          </span>
+          {comment.user.isAdmin && (
+            <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-primary">
+              admin
+            </span>
+          )}
+          <span className="text-xs text-muted-foreground">
+            {comment.createdAtFormatted}
+          </span>
+        </div>
+        <p className="mt-0.5 whitespace-pre-wrap text-sm">
+          <BodyWithMentions text={comment.body} />
+        </p>
+
+        {(grouped.length > 0 || pickerOpen) && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1">
+            {grouped.map(([emoji, { count, mine }]) => (
+              <button
+                key={emoji}
+                type="button"
+                onClick={() => toggle(emoji)}
+                disabled={pending}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors",
+                  mine
+                    ? "border-primary bg-primary/10"
+                    : "border-input bg-background hover:bg-accent",
+                )}
+              >
+                <span>{emoji}</span>
+                <span className="tabular-nums text-muted-foreground">
+                  {count}
+                </span>
+              </button>
+            ))}
+            {pickerOpen &&
+              REACTION_EMOJI.filter(
+                (e) => !grouped.some(([emoji]) => emoji === e),
+              ).map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => toggle(emoji)}
+                  disabled={pending}
+                  className="rounded-full border border-dashed border-input bg-background px-2 py-0.5 text-xs hover:bg-accent"
+                >
+                  {emoji}
+                </button>
+              ))}
+          </div>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={() => setPickerOpen((o) => !o)}
+        className="rounded p-1 text-muted-foreground hover:bg-accent"
+        aria-label="React"
+        title="React"
+      >
+        <SmilePlus className="h-3.5 w-3.5" />
+      </button>
+      {canDelete && <DeleteButton id={comment.id} />}
+    </li>
+  );
+}
+
+// Renders @name mentions in a distinct color. Lightweight — no
+// click-to-profile yet.
+function BodyWithMentions({ text }: { text: string }) {
+  const parts = text.split(/(@[A-Za-z0-9_.-]+)/g);
+  return (
+    <>
+      {parts.map((p, i) =>
+        p.startsWith("@") ? (
+          <span key={i} className="font-medium text-primary">
+            {p}
+          </span>
+        ) : (
+          <React.Fragment key={i}>{p}</React.Fragment>
+        ),
+      )}
+    </>
   );
 }
 
