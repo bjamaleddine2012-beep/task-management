@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 
 import { CalendarView } from "./_components/calendar-view";
 import { CreateTaskDialog } from "./_components/create-task-dialog";
+import { ExportCsvButton } from "./_components/export-csv-button";
 import { KanbanBoard } from "./_components/kanban-board";
 import { ReviewQueue } from "./_components/review-queue";
 import { TasksTable } from "./_components/tasks-table";
@@ -191,8 +192,9 @@ export default async function AdminTasksPage({
             Create, assign, and review submissions.
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           <ViewSwitcher active={view} />
+          <ExportCsvButton />
           <CreateTaskDialog users={users} />
         </div>
       </header>

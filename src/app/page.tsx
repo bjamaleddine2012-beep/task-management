@@ -20,6 +20,7 @@ import { BadgeUpdater } from "@/components/badge-updater";
 import { PushNotifications } from "@/components/push-notifications";
 import { getBadgeCount } from "@/lib/notify";
 import { CommentThread, type CommentItem } from "./_components/comment-thread";
+import { ProofThumbnails } from "./_components/proof-thumbnails";
 import { SubmitProofDialog } from "./_components/submit-proof-dialog";
 import { SubtaskChecklist, type SubtaskItem } from "./_components/subtask-checklist";
 import { TaskStatusForm } from "./_components/task-status-form";
@@ -367,29 +368,7 @@ function TaskRow({
           )}
 
           {task.proofImages.length > 0 && task.status !== "COMPLETED" && (
-            <div className="mt-3 grid grid-cols-3 gap-1.5 sm:grid-cols-4">
-              {task.proofImages.slice(0, 4).map((img) => (
-                <a
-                  key={img.id}
-                  href={img.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="block aspect-square overflow-hidden rounded-md border bg-muted"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={img.url}
-                    alt="Proof"
-                    className="h-full w-full object-cover"
-                  />
-                </a>
-              ))}
-              {task.proofImages.length > 4 && (
-                <div className="flex aspect-square items-center justify-center rounded-md border bg-muted text-xs text-muted-foreground">
-                  +{task.proofImages.length - 4}
-                </div>
-              )}
-            </div>
+            <ProofThumbnails images={task.proofImages} />
           )}
 
           {task.status === "REJECTED" && task.reviewNote && (

@@ -1,8 +1,9 @@
 "use client";
 
 import * as React from "react";
-import { useActionState } from "react";
-import { Loader2, MoreHorizontal } from "lucide-react";
+import { useActionState, useTransition } from "react";
+import { Copy, Loader2, MoreHorizontal, Trash2, UserCog, X } from "lucide-react";
+import { toast } from "sonner";
 import type { TaskPriority, TaskStatus } from "@prisma/client";
 
 import { Badge } from "@/components/ui/badge";
@@ -33,7 +34,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  bulkDeleteTasksAction,
+  bulkReassignTasksAction,
   deleteTaskAction,
+  duplicateTaskAction,
   updateTaskAction,
   type TaskActionState,
 } from "@/lib/actions/tasks";
@@ -98,8 +102,34 @@ export function TasksTable({
     task: AdminTaskRow;
     kind: DialogKind;
   } | null>(null);
+  // Bulk selection state — set of selected task ids.
+  const [selected, setSelected] = React.useState<Set<string>>(new Set());
 
   const close = () => setOpenFor(null);
+
+  // Wipe stale selections if the underlying task list changes.
+  React.useEffect(() => {
+    setSelected((prev) => {
+      const valid = new Set(tasks.map((t) => t.id));
+      const next = new Set<string>();
+      for (const id of prev) if (valid.has(id)) next.add(id);
+      return next;
+    });
+  }, [tasks]);
+
+  const toggleOne = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const toggleAll = () => {
+    setSelected((prev) =>
+      prev.size === tasks.length ? new Set() : new Set(tasks.map((t) => t.id)),
+    );
+  };
+  const clearSelection = () => setSelected(new Set());
 
   if (tasks.length === 0) {
     return (
@@ -111,10 +141,29 @@ export function TasksTable({
 
   return (
     <>
+      {selected.size > 0 && (
+        <BulkActionBar
+          ids={Array.from(selected)}
+          users={users}
+          onClear={clearSelection}
+        />
+      )}
+
       <div className="rounded-lg border bg-background">
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-10">
+                <input
+                  type="checkbox"
+                  aria-label="Select all"
+                  checked={
+                    selected.size === tasks.length && tasks.length > 0
+                  }
+                  onChange={toggleAll}
+                  className="h-4 w-4 rounded border-input"
+                />
+              </TableHead>
               <TableHead>Task</TableHead>
               <TableHead>Assignee</TableHead>
               <TableHead>Priority</TableHead>
@@ -125,7 +174,19 @@ export function TasksTable({
           </TableHeader>
           <TableBody>
             {tasks.map((t) => (
-              <TableRow key={t.id}>
+              <TableRow
+                key={t.id}
+                data-state={selected.has(t.id) ? "selected" : undefined}
+              >
+                <TableCell>
+                  <input
+                    type="checkbox"
+                    aria-label={`Select ${t.title}`}
+                    checked={selected.has(t.id)}
+                    onChange={() => toggleOne(t.id)}
+                    className="h-4 w-4 rounded border-input"
+                  />
+                </TableCell>
                 <TableCell>
                   <div className="font-medium">{t.title}</div>
                   {t.description && (
@@ -159,6 +220,7 @@ export function TasksTable({
                 </TableCell>
                 <TableCell className="text-right">
                   <RowMenu
+                    taskId={t.id}
                     onEdit={() => setOpenFor({ task: t, kind: "edit" })}
                     onDelete={() => setOpenFor({ task: t, kind: "delete" })}
                   />
@@ -182,27 +244,153 @@ export function TasksTable({
   );
 }
 
+// Floats above the table when one or more rows are selected. Hosts bulk
+// actions (reassign + delete) and a clear button.
+function BulkActionBar({
+  ids,
+  users,
+  onClear,
+}: {
+  ids: string[];
+  users: UserOption[];
+  onClear: () => void;
+}) {
+  const [reassignTo, setReassignTo] = React.useState<string>("");
+  const [deleting, startDeleting] = useTransition();
+  const [reassigning, startReassigning] = useTransition();
+
+  const handleReassign = () => {
+    if (!reassignTo) {
+      toast.error("Pick a user");
+      return;
+    }
+    startReassigning(async () => {
+      const fd = new FormData();
+      for (const id of ids) fd.append("ids", id);
+      fd.set("assignedToId", reassignTo);
+      const res = await bulkReassignTasksAction(null, fd);
+      if (res?.ok) {
+        toast.success(res.message ?? "Reassigned");
+        onClear();
+      } else if (res && !res.ok) {
+        toast.error(res.error);
+      }
+    });
+  };
+
+  const handleDelete = () => {
+    if (!confirm(`Delete ${ids.length} task${ids.length === 1 ? "" : "s"}? This can't be undone.`))
+      return;
+    startDeleting(async () => {
+      const fd = new FormData();
+      for (const id of ids) fd.append("ids", id);
+      const res = await bulkDeleteTasksAction(null, fd);
+      if (res?.ok) {
+        toast.success(res.message ?? "Deleted");
+        onClear();
+      } else if (res && !res.ok) {
+        toast.error(res.error);
+      }
+    });
+  };
+
+  return (
+    <div className="mb-3 flex flex-col items-start gap-2 rounded-lg border bg-primary/5 p-3 sm:flex-row sm:items-center sm:justify-between">
+      <span className="text-sm font-medium">
+        {ids.length} selected
+      </span>
+      <div className="flex flex-wrap items-center gap-2">
+        <Select value={reassignTo} onValueChange={setReassignTo}>
+          <SelectTrigger className="h-8 w-44 text-xs">
+            <SelectValue placeholder="Reassign to…" />
+          </SelectTrigger>
+          <SelectContent>
+            {users.map((u) => (
+              <SelectItem key={u.id} value={u.id}>
+                {u.name ?? u.email}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={handleReassign}
+          disabled={reassigning || deleting || !reassignTo}
+        >
+          {reassigning ? (
+            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <UserCog className="mr-1 h-3.5 w-3.5" />
+          )}
+          Reassign
+        </Button>
+        <Button
+          size="sm"
+          variant="destructive"
+          onClick={handleDelete}
+          disabled={deleting || reassigning}
+        >
+          {deleting ? (
+            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Trash2 className="mr-1 h-3.5 w-3.5" />
+          )}
+          Delete
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onClear}
+          disabled={deleting || reassigning}
+        >
+          <X className="mr-1 h-3.5 w-3.5" />
+          Clear
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function RowMenu({
+  taskId,
   onEdit,
   onDelete,
 }: {
+  taskId: string;
   onEdit: () => void;
   onDelete: () => void;
 }) {
   const [open, setOpen] = React.useState(false);
+  const [duplicating, startDuplicating] = useTransition();
+
+  const handleDuplicate = () => {
+    startDuplicating(async () => {
+      const fd = new FormData();
+      fd.set("id", taskId);
+      const res = await duplicateTaskAction(null, fd);
+      if (res?.ok) {
+        toast.success(res.message ?? "Duplicated");
+      } else if (res && !res.ok) {
+        toast.error(res.error);
+      }
+      setOpen(false);
+    });
+  };
+
   return (
     <div className="relative inline-block text-left">
       <Button
         variant="ghost"
         size="icon"
         onClick={() => setOpen((o) => !o)}
-        onBlur={() => setTimeout(() => setOpen(false), 100)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
       >
         <MoreHorizontal className="h-4 w-4" />
         <span className="sr-only">Actions</span>
       </Button>
       {open && (
-        <div className="absolute right-0 z-20 mt-1 w-32 rounded-md border bg-popover p-1 text-sm shadow-md">
+        <div className="absolute right-0 z-20 mt-1 w-36 rounded-md border bg-popover p-1 text-sm shadow-md">
           <button
             type="button"
             onMouseDown={(e) => e.preventDefault()}
@@ -210,6 +398,20 @@ function RowMenu({
             className="block w-full rounded-sm px-2 py-1.5 text-left hover:bg-accent"
           >
             Edit
+          </button>
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={handleDuplicate}
+            disabled={duplicating}
+            className="flex w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"
+          >
+            {duplicating ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
+            Duplicate
           </button>
           <button
             type="button"

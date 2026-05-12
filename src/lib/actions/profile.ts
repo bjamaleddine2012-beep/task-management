@@ -1,11 +1,13 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import bcrypt from "bcryptjs";
 
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import {
   addCommentSchema,
+  changeOwnPasswordSchema,
   deleteCommentSchema,
   updateProfileSchema,
 } from "@/lib/validators/profile";
@@ -143,6 +145,62 @@ export async function addCommentAction(
   revalidatePath("/");
   revalidatePath("/admin/tasks");
   return { ok: true };
+}
+
+// ─── Change own password ────────────────────────────────────────────────────
+
+export async function changeOwnPasswordAction(
+  _prev: ProfileActionState,
+  formData: FormData,
+): Promise<ProfileActionState> {
+  const session = await auth();
+  if (!session?.user) return { ok: false, error: "Not authenticated" };
+
+  const parsed = changeOwnPasswordSchema.safeParse({
+    currentPassword: formData.get("currentPassword"),
+    newPassword: formData.get("newPassword"),
+    confirmPassword: formData.get("confirmPassword"),
+  });
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "Please fix the errors.",
+      fieldErrors: flattenZodErrors(parsed.error),
+    };
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { passwordHash: true },
+  });
+  if (!user) return { ok: false, error: "User not found." };
+
+  // Users who only ever signed in via Google have no password hash. They
+  // can set one here without the current-password check.
+  if (user.passwordHash) {
+    const ok = await bcrypt.compare(parsed.data.currentPassword, user.passwordHash);
+    if (!ok) {
+      return {
+        ok: false,
+        error: "Current password is wrong.",
+        fieldErrors: { currentPassword: ["Wrong password"] },
+      };
+    }
+  }
+
+  const passwordHash = await bcrypt.hash(parsed.data.newPassword, 12);
+  await prisma.user.update({
+    where: { id: session.user.id },
+    data: { passwordHash },
+  });
+
+  revalidatePath("/profile");
+  return {
+    ok: true,
+    message: user.passwordHash
+      ? "Password changed."
+      : "Password set. You can now sign in with email + password.",
+  };
 }
 
 export async function deleteCommentAction(

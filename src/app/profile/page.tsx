@@ -14,6 +14,7 @@ import {
 import { prisma } from "@/lib/prisma";
 import { getUserStats } from "@/lib/stats";
 
+import { ChangePasswordForm } from "./_components/change-password-form";
 import { ProfileForm } from "./_components/profile-form";
 
 export const dynamic = "force-dynamic";
@@ -32,6 +33,7 @@ export default async function ProfilePage() {
         avatarEmoji: true,
         quietHoursStart: true,
         quietHoursEnd: true,
+        passwordHash: true,
         createdAt: true,
       },
     }),
@@ -120,7 +122,7 @@ export default async function ProfilePage() {
         </div>
       </section>
 
-      <section>
+      <section className="mb-8">
         <h2 className="mb-3 text-sm font-medium text-muted-foreground">
           Edit profile
         </h2>
@@ -135,6 +137,17 @@ export default async function ProfilePage() {
                 quietHoursEnd: user.quietHoursEnd ?? "",
               }}
             />
+          </CardContent>
+        </Card>
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-sm font-medium text-muted-foreground">
+          {user.passwordHash ? "Change password" : "Set a password"}
+        </h2>
+        <Card>
+          <CardContent className="p-4 sm:p-6">
+            <ChangePasswordForm hasPassword={!!user.passwordHash} />
           </CardContent>
         </Card>
       </section>

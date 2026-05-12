@@ -5,6 +5,7 @@ import { after } from "next/server";
 import type { Session } from "next-auth";
 
 import { auth } from "@/auth";
+import { recordActivity } from "@/lib/activity";
 import { reviewProofWithAi } from "@/lib/ai-review";
 import { notifyAdmins, notifyUser } from "@/lib/notify";
 import { prisma } from "@/lib/prisma";
@@ -136,6 +137,13 @@ export async function createTaskAction(
           : undefined,
     },
   });
+
+  await recordActivity(
+    created.id,
+    gate.session.user.id,
+    "created",
+    `assigned to ${assignedToId}`,
+  );
 
   // Notify the assignee. Fire-and-forget — if push isn't set up or the
   // user has no subscriptions, this no-ops silently.
@@ -340,6 +348,13 @@ export async function submitProofAction(
     }),
   ]);
 
+  await recordActivity(
+    task.id,
+    gate.session.user.id,
+    "submitted",
+    `${parsed.data.images.length} photo${parsed.data.images.length === 1 ? "" : "s"}`,
+  );
+
   // Notify all admins that something is awaiting review.
   void notifyAdmins({
     title: "New submission to review",
@@ -431,6 +446,13 @@ export async function approveProofAction(
     return t;
   });
 
+  await recordActivity(
+    parsed.data.id,
+    gate.session.user.id,
+    "approved",
+    `+${updated.pointsValue} pts${parsed.data.note ? ` · "${parsed.data.note.slice(0, 60)}"` : ""}`,
+  );
+
   void notifyUser(updated.assignedToId, {
     title: `Task approved ✓ (+${updated.pointsValue} pts)`,
     body: updated.title,
@@ -493,6 +515,13 @@ export async function rejectProofAction(
     },
     select: { assignedToId: true, title: true },
   });
+
+  await recordActivity(
+    parsed.data.id,
+    gate.session.user.id,
+    "rejected",
+    parsed.data.note.slice(0, 200),
+  );
 
   void notifyUser(updated.assignedToId, {
     title: "Resubmission needed",
@@ -610,4 +639,223 @@ export async function deleteSubtaskAction(
   revalidatePath("/admin/tasks");
   revalidatePath("/");
   return { ok: true };
+}
+
+// ─── Admin power tools ──────────────────────────────────────────────────────
+
+// Duplicate an existing task. Copies title/desc/priority/due/checklist/
+// points but moves due date forward 1 day and resets status. The clone
+// can optionally be reassigned at the same time.
+export async function duplicateTaskAction(
+  _prev: TaskActionState,
+  formData: FormData,
+): Promise<TaskActionState> {
+  const gate = await requireAdmin();
+  if (!gate.ok) return { ok: false, error: gate.error };
+
+  const id = formData.get("id");
+  if (typeof id !== "string" || !id) {
+    return { ok: false, error: "Invalid task id." };
+  }
+  const assignTo = formData.get("assignedToId");
+
+  const src = await prisma.task.findUnique({
+    where: { id },
+    include: {
+      subtasks: { select: { title: true, position: true } },
+    },
+  });
+  if (!src) return { ok: false, error: "Task not found." };
+
+  const due = new Date(src.dueDate);
+  due.setDate(due.getDate() + 1);
+
+  const assignedToId =
+    typeof assignTo === "string" && assignTo ? assignTo : src.assignedToId;
+
+  const dup = await prisma.task.create({
+    data: {
+      title: src.title,
+      description: src.description,
+      priority: src.priority,
+      pointsValue: src.pointsValue,
+      category: src.category,
+      dueDate: due,
+      assignedToId,
+      createdById: gate.session.user.id,
+      fromTemplateId: src.fromTemplateId,
+      subtasks:
+        src.subtasks.length > 0
+          ? {
+              create: src.subtasks.map((s) => ({
+                title: s.title,
+                position: s.position,
+              })),
+            }
+          : undefined,
+    },
+  });
+
+  await recordActivity(
+    dup.id,
+    gate.session.user.id,
+    "duplicated",
+    `from task ${id}`,
+  );
+
+  void notifyUser(assignedToId, {
+    title: "New task assigned",
+    body: dup.title,
+    url: "/",
+    tag: `task:${dup.id}`,
+  });
+
+  revalidatePath("/admin/tasks");
+  revalidatePath("/");
+  return { ok: true, message: "Task duplicated." };
+}
+
+// Bulk: delete many tasks at once.
+export async function bulkDeleteTasksAction(
+  _prev: TaskActionState,
+  formData: FormData,
+): Promise<TaskActionState> {
+  const gate = await requireAdmin();
+  if (!gate.ok) return { ok: false, error: gate.error };
+
+  // FormData repeated `ids` entries → string[]
+  const ids = formData.getAll("ids").filter((v): v is string => typeof v === "string");
+  if (ids.length === 0) return { ok: false, error: "No tasks selected." };
+
+  const r = await prisma.task.deleteMany({ where: { id: { in: ids } } });
+  revalidatePath("/admin/tasks");
+  revalidatePath("/");
+  return { ok: true, message: `Deleted ${r.count} task${r.count === 1 ? "" : "s"}.` };
+}
+
+// Bulk: reassign many tasks at once to a new user.
+export async function bulkReassignTasksAction(
+  _prev: TaskActionState,
+  formData: FormData,
+): Promise<TaskActionState> {
+  const gate = await requireAdmin();
+  if (!gate.ok) return { ok: false, error: gate.error };
+
+  const ids = formData.getAll("ids").filter((v): v is string => typeof v === "string");
+  const newAssigneeId = formData.get("assignedToId");
+  if (ids.length === 0) return { ok: false, error: "No tasks selected." };
+  if (typeof newAssigneeId !== "string" || !newAssigneeId) {
+    return { ok: false, error: "Pick a user." };
+  }
+
+  const assignee = await prisma.user.findUnique({
+    where: { id: newAssigneeId },
+    select: { id: true },
+  });
+  if (!assignee) return { ok: false, error: "User not found." };
+
+  const r = await prisma.task.updateMany({
+    where: { id: { in: ids } },
+    data: { assignedToId: newAssigneeId },
+  });
+
+  // Log each reassignment (best-effort, fire-and-forget).
+  for (const id of ids) {
+    void recordActivity(id, gate.session.user.id, "reassigned", `to ${newAssigneeId}`);
+  }
+
+  // Notify the new assignee once with a summary.
+  if (r.count > 0) {
+    void notifyUser(newAssigneeId, {
+      title: `${r.count} task${r.count === 1 ? "" : "s"} reassigned to you`,
+      body: "Open the app to see them",
+      url: "/",
+    });
+  }
+
+  revalidatePath("/admin/tasks");
+  revalidatePath("/");
+  return {
+    ok: true,
+    message: `Reassigned ${r.count} task${r.count === 1 ? "" : "s"}.`,
+  };
+}
+
+// CSV export of every task — for backup or external reporting. Returns
+// the raw CSV string; the client triggers a download.
+export async function exportTasksCsvAction(): Promise<
+  | { ok: true; csv: string; filename: string }
+  | { ok: false; error: string }
+> {
+  const gate = await requireAdmin();
+  if (!gate.ok) return { ok: false, error: gate.error };
+
+  const tasks = await prisma.task.findMany({
+    orderBy: [{ createdAt: "desc" }],
+    select: {
+      id: true,
+      title: true,
+      description: true,
+      priority: true,
+      status: true,
+      pointsValue: true,
+      category: true,
+      dueDate: true,
+      createdAt: true,
+      reviewedAt: true,
+      assignedTo: { select: { name: true, email: true } },
+      createdBy: { select: { name: true, email: true } },
+    },
+  });
+
+  const esc = (s: unknown): string => {
+    if (s == null) return "";
+    const str = s instanceof Date ? s.toISOString() : String(s);
+    if (/[",\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
+    return str;
+  };
+
+  const headers = [
+    "id",
+    "title",
+    "description",
+    "priority",
+    "status",
+    "pointsValue",
+    "category",
+    "dueDate",
+    "assignee",
+    "assigneeEmail",
+    "createdBy",
+    "createdByEmail",
+    "createdAt",
+    "reviewedAt",
+  ];
+
+  const rows = tasks.map((t) =>
+    [
+      esc(t.id),
+      esc(t.title),
+      esc(t.description),
+      esc(t.priority),
+      esc(t.status),
+      esc(t.pointsValue),
+      esc(t.category),
+      esc(t.dueDate),
+      esc(t.assignedTo.name),
+      esc(t.assignedTo.email),
+      esc(t.createdBy.name),
+      esc(t.createdBy.email),
+      esc(t.createdAt),
+      esc(t.reviewedAt),
+    ].join(","),
+  );
+
+  const csv = [headers.join(","), ...rows].join("\r\n");
+  const stamp = new Date().toISOString().slice(0, 10);
+  return {
+    ok: true,
+    csv,
+    filename: `tasks-${stamp}.csv`,
+  };
 }

@@ -83,6 +83,7 @@ model User {
   defaultedTemplates  TaskTemplate[]     @relation("TemplateDefaultAssignee")
   pushSubscriptions   PushSubscription[]
   taskComments        TaskComment[]
+  activities          TaskActivity[]     @relation("ActorActivities")
 
   @@index([role])
 }
@@ -162,6 +163,7 @@ model Task {
   category         String?
 
   comments         TaskComment[]
+  activities       TaskActivity[]
 
   // One task → many proof photos (multi-photo submissions). On resubmit
   // the old TaskProofImage rows are deleted, so the set always reflects
@@ -259,6 +261,26 @@ model PushSubscription {
   createdAt DateTime @default(now())
 
   @@index([userId])
+}
+
+// Audit log: timestamped record of every state-changing event on a task.
+// Driven by recordActivity() from server actions. Visible to admins in
+// the review dialog and on the (future) activity feed.
+model TaskActivity {
+  id        String   @id @default(cuid())
+  taskId    String
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  actorId   String?
+  actor     User?    @relation("ActorActivities", fields: [actorId], references: [id], onDelete: SetNull)
+  // Free-text "kind" — e.g. "created" / "approved" / "rejected" / "duplicated"
+  // / "reassigned" / "deleted" / "submitted" / "edited" / "comment".
+  kind      String
+  // Short human-readable description, e.g. "approved with +10 pts".
+  detail    String?
+  createdAt DateTime @default(now())
+
+  @@index([taskId, createdAt])
+  @@index([actorId])
 }
 
 // Threaded comments on a task. Either the assignee or any admin can

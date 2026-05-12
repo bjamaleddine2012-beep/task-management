@@ -6,6 +6,7 @@ import { Check, ExternalLink, Loader2, MapPin, X } from "lucide-react";
 import type { TaskPriority } from "@prisma/client";
 
 import { Badge } from "@/components/ui/badge";
+import { PhotoLightbox } from "@/components/photo-lightbox";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -329,13 +330,17 @@ function ReviewDialog({
 
 function PhotoGallery({ images }: { images: ReviewQueueImage[] }) {
   const [active, setActive] = React.useState(0);
+  const [lightboxAt, setLightboxAt] = React.useState<number | null>(null);
   const current = images[active];
 
   if (!current) return null;
 
   return (
     <div className="space-y-2">
-      <div className="relative overflow-hidden rounded-lg border bg-black/5">
+      <div
+        className="relative cursor-zoom-in overflow-hidden rounded-lg border bg-black/5"
+        onClick={() => setLightboxAt(active)}
+      >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={current.url}
@@ -383,6 +388,14 @@ function PhotoGallery({ images }: { images: ReviewQueueImage[] }) {
             </button>
           ))}
         </div>
+      )}
+
+      {lightboxAt !== null && (
+        <PhotoLightbox
+          images={images.map((i) => ({ url: i.url }))}
+          initialIndex={lightboxAt}
+          onClose={() => setLightboxAt(null)}
+        />
       )}
     </div>
   );

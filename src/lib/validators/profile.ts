@@ -36,3 +36,18 @@ export const addCommentSchema = z.object({
 export const deleteCommentSchema = z.object({
   id: z.string().min(1),
 });
+
+// Used by users to change their own password from /profile.
+export const changeOwnPasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1, "Enter your current password"),
+    newPassword: z
+      .string()
+      .min(8, "New password must be at least 8 characters")
+      .max(128),
+    confirmPassword: z.string().min(1),
+  })
+  .refine((d) => d.newPassword === d.confirmPassword, {
+    path: ["confirmPassword"],
+    message: "Passwords don't match",
+  });
