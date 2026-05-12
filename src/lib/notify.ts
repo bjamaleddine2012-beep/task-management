@@ -63,14 +63,47 @@ export async function getBadgeCount(userId: string): Promise<number> {
   return myOpen + toReview;
 }
 
+// Returns true if `now` falls inside the user's configured quiet-hours
+// window (in their local time, approximated using server UTC). Server
+// doesn't know the user's timezone — so quiet hours operate on UTC.
+// Good enough for the family use case; a future improvement could
+// store IANA timezone on User.
+function isInQuietHours(
+  now: Date,
+  start: string | null,
+  end: string | null,
+): boolean {
+  if (!start || !end) return false;
+  const [sh, sm] = start.split(":").map(Number);
+  const [eh, em] = end.split(":").map(Number);
+  if ([sh, sm, eh, em].some((n) => Number.isNaN(n))) return false;
+  const cur = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const startMin = sh * 60 + sm;
+  const endMin = eh * 60 + em;
+  // Wrap-around windows (22:00 → 07:00) span midnight.
+  if (startMin <= endMin) return cur >= startMin && cur < endMin;
+  return cur >= startMin || cur < endMin;
+}
+
 export async function notifyUser(
   userId: string,
   payload: NotificationPayload,
 ): Promise<void> {
   if (!ensureConfigured()) return;
 
-  const subs = await prisma.pushSubscription.findMany({ where: { userId } });
-  if (subs.length === 0) return;
+  const [user, subs] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: userId },
+      select: { quietHoursStart: true, quietHoursEnd: true },
+    }),
+    prisma.pushSubscription.findMany({ where: { userId } }),
+  ]);
+  if (!user || subs.length === 0) return;
+
+  // Skip during quiet hours. Badge still updates on next push or open.
+  if (isInQuietHours(new Date(), user.quietHoursStart, user.quietHoursEnd)) {
+    return;
+  }
 
   // Compute the live badge count so the home-screen icon bubble updates
   // even if the user never opens the app.

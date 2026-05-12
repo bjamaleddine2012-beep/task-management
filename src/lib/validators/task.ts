@@ -39,6 +39,13 @@ export const createTaskSchema = z.object({
     .max(50, "Up to 50 subtasks per task")
     .optional()
     .default([]),
+  pointsValue: z
+    .union([z.literal(""), z.string().regex(/^\d+$/)])
+    .optional()
+    .transform((v) => {
+      const n = v && v !== "" ? Number(v) : 10;
+      return Math.max(0, Math.min(1000, n));
+    }),
 });
 
 export const updateTaskSchema = z.object({

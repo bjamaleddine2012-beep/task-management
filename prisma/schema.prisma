@@ -55,6 +55,20 @@ model User {
 
   role          Role      @default(USER)
 
+  // Family-app visual identity. Each member picks an emoji + a color,
+  // shown as a "chip" on task cards, headers, and comments.
+  avatarColor   String?   // hex, e.g. "#f97316"
+  avatarEmoji   String?   // single emoji character
+
+  // Running total of points earned from completed tasks. Awarded by
+  // approveProofAction; future rewards system will let users spend these.
+  points        Int       @default(0)
+
+  // Optional quiet hours (HH:mm in user's local timezone). When the
+  // current local time is in this window, notifyUser silently skips push.
+  quietHoursStart String? // "22:00"
+  quietHoursEnd   String? // "07:00"
+
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -68,6 +82,7 @@ model User {
   createdTemplates    TaskTemplate[]     @relation("CreatedTemplates")
   defaultedTemplates  TaskTemplate[]     @relation("TemplateDefaultAssignee")
   pushSubscriptions   PushSubscription[]
+  taskComments        TaskComment[]
 
   @@index([role])
 }
@@ -139,6 +154,14 @@ model Task {
   aiVerdict        String?   // "match" | "mismatch" | "uncertain"
   aiConfidence     Int?      // 0-100
   aiReasoning      String?
+
+  // Points awarded to the assignee on approval. Admin can override per
+  // task in the create dialog; default is 10.
+  pointsValue      Int       @default(10)
+  // Optional free-text category for filtering (e.g. "chores", "homework").
+  category         String?
+
+  comments         TaskComment[]
 
   // One task → many proof photos (multi-photo submissions). On resubmit
   // the old TaskProofImage rows are deleted, so the set always reflects
@@ -235,6 +258,21 @@ model PushSubscription {
   userAgent String?
   createdAt DateTime @default(now())
 
+  @@index([userId])
+}
+
+// Threaded comments on a task. Either the assignee or any admin can
+// post; everyone with access to the task sees the thread.
+model TaskComment {
+  id        String   @id @default(cuid())
+  taskId    String
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([taskId, createdAt])
   @@index([userId])
 }
 

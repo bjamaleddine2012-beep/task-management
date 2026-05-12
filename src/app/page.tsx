@@ -1,11 +1,12 @@
 import * as React from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { LogOut, ShieldCheck } from "lucide-react";
+import { LogOut, ShieldCheck, User as UserIcon } from "lucide-react";
 import type { TaskPriority, TaskStatus } from "@prisma/client";
 
 import { auth, signOut } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { Avatar } from "@/components/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,6 +19,7 @@ import {
 import { BadgeUpdater } from "@/components/badge-updater";
 import { PushNotifications } from "@/components/push-notifications";
 import { getBadgeCount } from "@/lib/notify";
+import { CommentThread, type CommentItem } from "./_components/comment-thread";
 import { SubmitProofDialog } from "./_components/submit-proof-dialog";
 import { SubtaskChecklist, type SubtaskItem } from "./_components/subtask-checklist";
 import { TaskStatusForm } from "./_components/task-status-form";
@@ -45,29 +47,54 @@ export default async function DashboardPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
 
-  const tasks = await prisma.task.findMany({
-    where: { assignedToId: session.user.id },
-    orderBy: [{ status: "asc" }, { dueDate: "asc" }],
-    select: {
-      id: true,
-      title: true,
-      description: true,
-      dueDate: true,
-      priority: true,
-      status: true,
-      reviewNote: true,
-      reviewedAt: true,
-      createdBy: { select: { name: true, email: true } },
-      proofImages: {
-        select: { id: true, url: true },
-        orderBy: { uploadedAt: "asc" },
+  const [me, tasks] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: session.user.id },
+      select: { name: true, email: true, avatarColor: true, avatarEmoji: true },
+    }),
+    prisma.task.findMany({
+      where: { assignedToId: session.user.id },
+      orderBy: [{ status: "asc" }, { dueDate: "asc" }],
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        dueDate: true,
+        priority: true,
+        status: true,
+        pointsValue: true,
+        reviewNote: true,
+        reviewedAt: true,
+        createdBy: { select: { name: true, email: true } },
+        proofImages: {
+          select: { id: true, url: true },
+          orderBy: { uploadedAt: "asc" },
+        },
+        subtasks: {
+          orderBy: { position: "asc" },
+          select: { id: true, title: true, done: true },
+        },
+        comments: {
+          orderBy: { createdAt: "asc" },
+          select: {
+            id: true,
+            body: true,
+            createdAt: true,
+            user: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                avatarColor: true,
+                avatarEmoji: true,
+                role: true,
+              },
+            },
+          },
+        },
       },
-      subtasks: {
-        orderBy: { position: "asc" },
-        select: { id: true, title: true, done: true },
-      },
-    },
-  });
+    }),
+  ]);
 
   const now = new Date();
   const soon = new Date(now);
@@ -80,6 +107,12 @@ export default async function DashboardPage() {
     hour: "numeric",
     minute: "2-digit",
   });
+  const commentFmt = new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 
   const formatted = tasks.map((t) => ({
     ...t,
@@ -87,6 +120,21 @@ export default async function DashboardPage() {
     isOverdue: t.dueDate < now && t.status !== "COMPLETED",
     isDueSoon:
       t.dueDate >= now && t.dueDate <= soon && t.status !== "COMPLETED",
+    comments: t.comments.map(
+      (c): CommentItem => ({
+        id: c.id,
+        body: c.body,
+        createdAtFormatted: commentFmt.format(c.createdAt),
+        user: {
+          id: c.user.id,
+          name: c.user.name,
+          email: c.user.email,
+          avatarColor: c.user.avatarColor,
+          avatarEmoji: c.user.avatarEmoji,
+          isAdmin: c.user.role === "ADMIN",
+        },
+      }),
+    ),
   }));
 
   const open = formatted.filter((t) => t.status !== "COMPLETED");
@@ -99,15 +147,31 @@ export default async function DashboardPage() {
     <div className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
       <BadgeUpdater count={badgeCount} />
       <header className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">My tasks</h1>
-          <p className="text-sm text-muted-foreground">
-            Hi {session.user.name ?? session.user.email}, you have{" "}
-            <span className="font-medium text-foreground">{open.length}</span>{" "}
-            open task{open.length === 1 ? "" : "s"}.
-          </p>
+        <div className="flex items-center gap-3">
+          <Link href="/profile" aria-label="Profile">
+            <Avatar
+              name={me?.name ?? me?.email ?? session.user.email}
+              emoji={me?.avatarEmoji}
+              color={me?.avatarColor}
+              size="lg"
+            />
+          </Link>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">My tasks</h1>
+            <p className="text-sm text-muted-foreground">
+              Hi {me?.name ?? session.user.email}, you have{" "}
+              <span className="font-medium text-foreground">{open.length}</span>{" "}
+              open task{open.length === 1 ? "" : "s"}.
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button asChild variant="ghost" size="sm">
+            <Link href="/profile">
+              <UserIcon className="mr-1 h-4 w-4" />
+              Profile
+            </Link>
+          </Button>
           {session.user.role === "ADMIN" && (
             <Button asChild variant="outline" size="sm">
               <Link href="/admin">
@@ -168,14 +232,24 @@ export default async function DashboardPage() {
 
       <Section title="Open" empty="No open tasks. You're caught up.">
         {open.map((task) => (
-          <TaskRow key={task.id} task={task} />
+          <TaskRow
+            key={task.id}
+            task={task}
+            currentUserId={session.user.id}
+            isAdmin={session.user.role === "ADMIN"}
+          />
         ))}
       </Section>
 
       {done.length > 0 && (
         <Section title="Completed">
           {done.map((task) => (
-            <TaskRow key={task.id} task={task} />
+            <TaskRow
+              key={task.id}
+              task={task}
+              currentUserId={session.user.id}
+              isAdmin={session.user.role === "ADMIN"}
+            />
           ))}
         </Section>
       )}
@@ -218,14 +292,24 @@ type TaskRowData = {
   isDueSoon: boolean;
   priority: TaskPriority;
   status: TaskStatus;
+  pointsValue: number;
   proofImages: Array<{ id: string; url: string }>;
   subtasks: SubtaskItem[];
+  comments: CommentItem[];
   reviewNote: string | null;
   reviewedAt: Date | null;
   createdBy: { name: string | null; email: string };
 };
 
-function TaskRow({ task }: { task: TaskRowData }) {
+function TaskRow({
+  task,
+  currentUserId,
+  isAdmin,
+}: {
+  task: TaskRowData;
+  currentUserId: string;
+  isAdmin: boolean;
+}) {
   const cardBorder = task.isOverdue
     ? "border-destructive/40"
     : task.status === "REJECTED"
@@ -245,6 +329,11 @@ function TaskRow({ task }: { task: TaskRowData }) {
             <Badge variant={PRIORITY_VARIANT[task.priority]}>
               {task.priority}
             </Badge>
+            {task.pointsValue > 0 && (
+              <Badge variant="outline" className="gap-1">
+                🏆 {task.pointsValue} pts
+              </Badge>
+            )}
             <span className="text-xs text-muted-foreground">
               · {STATUS_LABEL[task.status]}
             </span>
@@ -313,6 +402,22 @@ function TaskRow({ task }: { task: TaskRowData }) {
               ⏳ Waiting for admin review.
             </p>
           )}
+
+          <details className="mt-3 rounded-md border bg-muted/20">
+            <summary className="cursor-pointer px-3 py-2 text-xs text-muted-foreground">
+              {task.comments.length === 0
+                ? "Add a comment"
+                : `${task.comments.length} comment${task.comments.length === 1 ? "" : "s"}`}
+            </summary>
+            <div className="px-3 pb-3">
+              <CommentThread
+                taskId={task.id}
+                comments={task.comments}
+                currentUserId={currentUserId}
+                isCurrentUserAdmin={isAdmin}
+              />
+            </div>
+          </details>
         </div>
 
         <div className="flex flex-shrink-0 flex-col items-end gap-2">

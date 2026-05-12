@@ -1,3 +1,4 @@
+import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 
 import { CalendarView } from "./_components/calendar-view";
@@ -14,6 +15,7 @@ export default async function AdminTasksPage({
 }: {
   searchParams: Promise<{ view?: string }>;
 }) {
+  const session = await auth();
   const { view: viewParam } = await searchParams;
   const view: View =
     viewParam === "kanban" || viewParam === "calendar" ? viewParam : "table";
@@ -49,6 +51,24 @@ export default async function AdminTasksPage({
         subtasks: {
           orderBy: { position: "asc" },
           select: { id: true, title: true, done: true },
+        },
+        comments: {
+          orderBy: { createdAt: "asc" },
+          select: {
+            id: true,
+            body: true,
+            createdAt: true,
+            user: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                avatarColor: true,
+                avatarEmoji: true,
+                role: true,
+              },
+            },
+          },
         },
       },
     }),
@@ -106,6 +126,7 @@ export default async function AdminTasksPage({
     hour: "numeric",
     minute: "2-digit",
   });
+  const commentFmt = submittedFmt;
 
   // datetime-local needs YYYY-MM-DDTHH:mm in local time, not UTC.
   const toLocalInputValue = (d: Date) => {
@@ -125,6 +146,19 @@ export default async function AdminTasksPage({
       : null,
     isOverdue: t.dueDate < new Date() && t.status !== "COMPLETED",
     previousProofImages: previousByTaskId.get(t.id) ?? [],
+    comments: t.comments.map((c) => ({
+      id: c.id,
+      body: c.body,
+      createdAtFormatted: commentFmt.format(c.createdAt),
+      user: {
+        id: c.user.id,
+        name: c.user.name,
+        email: c.user.email,
+        avatarColor: c.user.avatarColor,
+        avatarEmoji: c.user.avatarEmoji,
+        isAdmin: c.user.role === "ADMIN",
+      },
+    })),
   }));
 
   const awaitingReview = formattedTasks
@@ -143,7 +177,10 @@ export default async function AdminTasksPage({
       aiVerdict: t.aiVerdict as "match" | "mismatch" | "uncertain" | null,
       aiConfidence: t.aiConfidence,
       aiReasoning: t.aiReasoning,
+      comments: t.comments,
     }));
+
+  const currentUserId = session?.user?.id ?? "";
 
   return (
     <div className="space-y-8">
@@ -165,7 +202,7 @@ export default async function AdminTasksPage({
           <h2 className="mb-3 text-sm font-medium text-muted-foreground">
             Awaiting review · {awaitingReview.length}
           </h2>
-          <ReviewQueue tasks={awaitingReview} />
+          <ReviewQueue tasks={awaitingReview} currentUserId={currentUserId} />
         </section>
       )}
 

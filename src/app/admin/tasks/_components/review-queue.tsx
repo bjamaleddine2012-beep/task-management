@@ -21,6 +21,10 @@ import {
   rejectProofAction,
   type TaskActionState,
 } from "@/lib/actions/tasks";
+import {
+  CommentThread,
+  type CommentItem,
+} from "@/app/_components/comment-thread";
 import { SubtaskChecklist } from "@/app/_components/subtask-checklist";
 
 const PRIORITY_VARIANT: Record<
@@ -56,9 +60,16 @@ export type ReviewQueueTask = {
   aiVerdict: "match" | "mismatch" | "uncertain" | null;
   aiConfidence: number | null;
   aiReasoning: string | null;
+  comments: CommentItem[];
 };
 
-export function ReviewQueue({ tasks }: { tasks: ReviewQueueTask[] }) {
+export function ReviewQueue({
+  tasks,
+  currentUserId,
+}: {
+  tasks: ReviewQueueTask[];
+  currentUserId: string;
+}) {
   const [reviewing, setReviewing] = React.useState<ReviewQueueTask | null>(
     null,
   );
@@ -118,16 +129,22 @@ export function ReviewQueue({ tasks }: { tasks: ReviewQueueTask[] }) {
         })}
       </div>
 
-      <ReviewDialog task={reviewing} onClose={() => setReviewing(null)} />
+      <ReviewDialog
+        task={reviewing}
+        currentUserId={currentUserId}
+        onClose={() => setReviewing(null)}
+      />
     </>
   );
 }
 
 function ReviewDialog({
   task,
+  currentUserId,
   onClose,
 }: {
   task: ReviewQueueTask | null;
+  currentUserId: string;
   onClose: () => void;
 }) {
   const [approveState, approveAction, approving] = useActionState<
@@ -242,6 +259,15 @@ function ReviewDialog({
                 </div>
               </details>
             )}
+
+            <div className="rounded-md border bg-muted/20 p-3">
+              <CommentThread
+                taskId={task.id}
+                comments={task.comments}
+                currentUserId={currentUserId}
+                isCurrentUserAdmin={true}
+              />
+            </div>
 
             <div className="space-y-1.5">
               <Label htmlFor="review-note">

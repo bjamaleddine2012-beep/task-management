@@ -141,6 +141,22 @@ export function CreateTaskDialog({ users }: { users: UserOption[] }) {
           </div>
 
           <div className="space-y-1.5">
+            <Label htmlFor="pointsValue">
+              Points awarded{" "}
+              <span className="text-muted-foreground">(default 10)</span>
+            </Label>
+            <Input
+              id="pointsValue"
+              name="pointsValue"
+              type="number"
+              min={0}
+              max={1000}
+              defaultValue={10}
+              placeholder="10"
+            />
+          </div>
+
+          <div className="space-y-1.5">
             <Label htmlFor="assignedToId">Assign to</Label>
             <Select name="assignedToId" required>
               <SelectTrigger id="assignedToId">

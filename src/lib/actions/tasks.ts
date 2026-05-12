@@ -82,6 +82,7 @@ export async function createTaskAction(
     priority: formData.get("priority"),
     assignedToId: formData.get("assignedToId"),
     subtasks,
+    pointsValue: formData.get("pointsValue") ?? "",
   });
 
   if (!parsed.success) {
@@ -99,6 +100,7 @@ export async function createTaskAction(
     priority,
     assignedToId,
     subtasks: items,
+    pointsValue,
   } = parsed.data;
 
   // Make sure the assignee actually exists.
@@ -122,6 +124,7 @@ export async function createTaskAction(
       priority,
       assignedToId,
       createdById: gate.session.user.id,
+      pointsValue,
       subtasks:
         items.length > 0
           ? {
@@ -407,21 +410,31 @@ export async function approveProofAction(
     };
   }
 
-  const updated = await prisma.task.update({
-    where: { id: parsed.data.id },
-    data: {
-      status: "COMPLETED",
-      reviewedAt: new Date(),
-      reviewedById: gate.session.user.id,
-      reviewNote: parsed.data.note,
-    },
-    select: { assignedToId: true, title: true },
+  // Atomic: flip status + credit points to assignee.
+  const updated = await prisma.$transaction(async (tx) => {
+    const t = await tx.task.update({
+      where: { id: parsed.data.id },
+      data: {
+        status: "COMPLETED",
+        reviewedAt: new Date(),
+        reviewedById: gate.session.user.id,
+        reviewNote: parsed.data.note,
+      },
+      select: { assignedToId: true, title: true, pointsValue: true },
+    });
+    if (t.pointsValue > 0) {
+      await tx.user.update({
+        where: { id: t.assignedToId },
+        data: { points: { increment: t.pointsValue } },
+      });
+    }
+    return t;
   });
 
   void notifyUser(updated.assignedToId, {
-    title: "Task approved ✓",
+    title: `Task approved ✓ (+${updated.pointsValue} pts)`,
     body: updated.title,
-    url: "/",
+    url: "/profile",
     tag: `review:${parsed.data.id}`,
   });
 

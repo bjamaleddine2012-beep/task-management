@@ -10,6 +10,7 @@ import {
   ListChecks,
   LogOut,
   Menu,
+  User,
   Users,
   X,
 } from "lucide-react";
@@ -23,6 +24,7 @@ const NAV = [
   { href: "/admin/tasks", label: "Tasks", icon: ListChecks },
   { href: "/admin/templates", label: "Templates", icon: Library },
   { href: "/admin/analytics", label: "Analytics", icon: BarChart3 },
+  { href: "/profile", label: "Profile", icon: User },
 ] as const;
 
 export function AdminShell({
