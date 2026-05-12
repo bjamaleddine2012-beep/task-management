@@ -6,11 +6,13 @@ import { usePathname } from "next/navigation";
 import {
   Activity,
   BarChart3,
+  DollarSign,
   LayoutDashboard,
   Library,
   ListChecks,
   LogOut,
   Menu,
+  ShoppingCart,
   User,
   Users,
   X,
@@ -25,6 +27,8 @@ const NAV = [
   { href: "/admin/tasks", label: "Tasks", icon: ListChecks },
   { href: "/admin/templates", label: "Templates", icon: Library },
   { href: "/admin/analytics", label: "Analytics", icon: BarChart3 },
+  { href: "/admin/allowance", label: "Allowance", icon: DollarSign },
+  { href: "/shopping", label: "Shopping", icon: ShoppingCart },
   { href: "/activity", label: "Activity", icon: Activity },
   { href: "/profile", label: "Profile", icon: User },
 ] as const;

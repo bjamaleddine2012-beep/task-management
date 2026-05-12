@@ -28,6 +28,7 @@ export function ProfileForm({
     avatarEmoji: string;
     quietHoursStart: string;
     quietHoursEnd: string;
+    birthday: string;
   };
 }) {
   const [state, action, pending] = useActionState<ProfileActionState, FormData>(
@@ -173,6 +174,20 @@ export function ProfileForm({
       <p className="-mt-3 text-xs text-muted-foreground">
         Notifications are muted during this window in your local time.
       </p>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="birthday">Birthday (optional)</Label>
+        <Input
+          id="birthday"
+          name="birthday"
+          type="date"
+          defaultValue={defaults.birthday}
+          className="sm:w-48"
+        />
+        <p className="text-xs text-muted-foreground">
+          Family gets a reminder a few days before. Year is private.
+        </p>
+      </div>
 
       <Button type="submit" disabled={pending}>
         {pending && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}

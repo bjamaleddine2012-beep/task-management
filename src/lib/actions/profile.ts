@@ -45,6 +45,7 @@ export async function updateProfileAction(
     avatarEmoji: formData.get("avatarEmoji") || "",
     quietHoursStart: formData.get("quietHoursStart") || "",
     quietHoursEnd: formData.get("quietHoursEnd") || "",
+    birthday: formData.get("birthday") || "",
   });
 
   if (!parsed.success) {
@@ -63,6 +64,7 @@ export async function updateProfileAction(
       avatarEmoji: parsed.data.avatarEmoji ?? null,
       quietHoursStart: parsed.data.quietHoursStart ?? null,
       quietHoursEnd: parsed.data.quietHoursEnd ?? null,
+      birthday: parsed.data.birthday ? new Date(parsed.data.birthday) : null,
     },
   });
 

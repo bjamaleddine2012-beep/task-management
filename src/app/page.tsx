@@ -1,7 +1,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { LogOut, ShieldCheck, User as UserIcon } from "lucide-react";
+import { LogOut, ShieldCheck, ShoppingCart, User as UserIcon } from "lucide-react";
 import type { TaskPriority, TaskStatus } from "@prisma/client";
 
 import { auth, signOut } from "@/auth";
@@ -170,6 +170,12 @@ export default async function DashboardPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button asChild variant="ghost" size="sm">
+            <Link href="/shopping">
+              <ShoppingCart className="mr-1 h-4 w-4" />
+              Shopping
+            </Link>
+          </Button>
           <Button asChild variant="ghost" size="sm">
             <Link href="/profile">
               <UserIcon className="mr-1 h-4 w-4" />

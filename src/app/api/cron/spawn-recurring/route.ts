@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { notifyAdmins, notifyUser } from "@/lib/notify";
 import { prisma } from "@/lib/prisma";
 
 // Vercel Cron hits this hourly (see vercel.json). For each active template
@@ -103,10 +104,57 @@ export async function GET(request: Request) {
     spawned.push(tpl.id);
   }
 
+  // Birthday reminders — piggyback on the same daily cron since Hobby
+  // only allows one run per day. Fires on the day itself; the result
+  // returns counts so the cron log shows what happened.
+  const birthdayNotifications = await checkBirthdays(now);
+
   return NextResponse.json({
     ok: true,
     ranAt: now.toISOString(),
     spawned,
     skipped,
+    birthdayNotifications,
   });
+}
+
+// Notify admins (and the birthday person themselves) when today is
+// someone's birthday. We match on month + day, ignoring year.
+async function checkBirthdays(now: Date): Promise<number> {
+  const month = now.getUTCMonth() + 1; // 1-12
+  const day = now.getUTCDate();
+
+  // Postgres EXTRACT works on the birthday timestamp column.
+  const todays = await prisma.$queryRaw<
+    Array<{ id: string; name: string | null; email: string }>
+  >`
+    SELECT id, name, email
+    FROM "User"
+    WHERE birthday IS NOT NULL
+      AND EXTRACT(MONTH FROM birthday) = ${month}
+      AND EXTRACT(DAY FROM birthday) = ${day}
+  `;
+
+  if (todays.length === 0) return 0;
+
+  let count = 0;
+  for (const u of todays) {
+    const name = u.name ?? u.email;
+    // Tell admins.
+    void notifyAdmins({
+      title: `🎂 It's ${name}'s birthday today!`,
+      body: "Don't forget to wish them.",
+      url: "/",
+      tag: `birthday:${u.id}:${now.toISOString().slice(0, 10)}`,
+    });
+    // Tell the person.
+    void notifyUser(u.id, {
+      title: "🎉 Happy birthday!",
+      body: "Hope you have a great day.",
+      url: "/",
+      tag: `birthday-self:${now.toISOString().slice(0, 10)}`,
+    });
+    count++;
+  }
+  return count;
 }

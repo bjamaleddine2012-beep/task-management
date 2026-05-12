@@ -69,6 +69,10 @@ model User {
   quietHoursStart String? // "22:00"
   quietHoursEnd   String? // "07:00"
 
+  // Optional birthday. We use month+day for "in N days" reminders. Year
+  // is stored too (for age display) but not required for the reminder.
+  birthday        DateTime?
+
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -84,7 +88,11 @@ model User {
   pushSubscriptions   PushSubscription[]
   taskComments        TaskComment[]
   commentReactions    CommentReaction[]
-  activities          TaskActivity[]     @relation("ActorActivities")
+  activities          TaskActivity[]      @relation("ActorActivities")
+  shoppingAdded       ShoppingItem[]      @relation("AddedShoppingItems")
+  shoppingChecked     ShoppingItem[]      @relation("CheckedShoppingItems")
+  allowanceEntries    AllowanceEntry[]    @relation("UserAllowance")
+  allowanceCreated    AllowanceEntry[]    @relation("CreatedAllowance")
 
   @@index([role])
 }
@@ -262,6 +270,42 @@ model PushSubscription {
   createdAt DateTime @default(now())
 
   @@index([userId])
+}
+
+// Shared family shopping list. Any signed-in user can add or check
+// items; admins can also delete other people's items.
+model ShoppingItem {
+  id          String    @id @default(cuid())
+  name        String
+  // Optional free-text quantity ("2 boxes", "1L"). Kept free-form so a
+  // family doesn't have to learn units.
+  quantity    String?
+  note        String?
+  addedById   String
+  addedBy     User      @relation("AddedShoppingItems", fields: [addedById], references: [id], onDelete: Cascade)
+  addedAt     DateTime  @default(now())
+  checkedById String?
+  checkedBy   User?     @relation("CheckedShoppingItems", fields: [checkedById], references: [id], onDelete: SetNull)
+  checkedAt   DateTime?
+
+  @@index([checkedAt])
+  @@index([addedAt])
+}
+
+// Allowance ledger: positive amounts = earned, negative = paid out.
+// Stored in cents so we don't deal with float precision. Admins are the
+// only ones who create entries; users see their own running total.
+model AllowanceEntry {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation("UserAllowance", fields: [userId], references: [id], onDelete: Cascade)
+  amountCents Int
+  reason      String
+  createdById String?
+  createdBy   User?    @relation("CreatedAllowance", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt])
 }
 
 // Audit log: timestamped record of every state-changing event on a task.

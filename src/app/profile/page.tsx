@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/card";
 import { prisma } from "@/lib/prisma";
 import { getUserStats } from "@/lib/stats";
+import { centsToDollars } from "@/lib/validators/allowance";
 
 import { ChangePasswordForm } from "./_components/change-password-form";
 import { ProfileForm } from "./_components/profile-form";
@@ -23,7 +24,7 @@ export default async function ProfilePage() {
   const session = await auth();
   if (!session?.user) redirect("/login?callbackUrl=/profile");
 
-  const [user, stats] = await Promise.all([
+  const [user, stats, allowanceAggregate, recentAllowance] = await Promise.all([
     prisma.user.findUnique({
       where: { id: session.user.id },
       select: {
@@ -33,13 +34,30 @@ export default async function ProfilePage() {
         avatarEmoji: true,
         quietHoursStart: true,
         quietHoursEnd: true,
+        birthday: true,
         passwordHash: true,
         createdAt: true,
       },
     }),
     getUserStats(session.user.id),
+    prisma.allowanceEntry.aggregate({
+      where: { userId: session.user.id },
+      _sum: { amountCents: true },
+    }),
+    prisma.allowanceEntry.findMany({
+      where: { userId: session.user.id },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+      select: { id: true, amountCents: true, reason: true, createdAt: true },
+    }),
   ]);
   if (!user) redirect("/login");
+
+  const allowanceCents = allowanceAggregate._sum.amountCents ?? 0;
+  const fmtAllowanceDate = new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+  });
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
@@ -86,6 +104,63 @@ export default async function ProfilePage() {
           accent="text-emerald-600 dark:text-emerald-400"
         />
       </section>
+
+      {(allowanceCents !== 0 || recentAllowance.length > 0) && (
+        <section className="mb-8">
+          <h2 className="mb-3 text-sm font-medium text-muted-foreground">
+            Allowance
+          </h2>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>Current balance</CardDescription>
+              <CardTitle
+                className={
+                  allowanceCents > 0
+                    ? "text-3xl text-emerald-600 dark:text-emerald-400"
+                    : allowanceCents < 0
+                      ? "text-3xl text-destructive"
+                      : "text-3xl"
+                }
+              >
+                {centsToDollars(allowanceCents)}
+              </CardTitle>
+            </CardHeader>
+            {recentAllowance.length > 0 && (
+              <CardContent className="pt-0">
+                <ul className="divide-y text-sm">
+                  {recentAllowance.map((e) => {
+                    const positive = e.amountCents > 0;
+                    return (
+                      <li
+                        key={e.id}
+                        className="flex items-center justify-between py-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate">{e.reason}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {fmtAllowanceDate.format(e.createdAt)}
+                          </p>
+                        </div>
+                        <span
+                          className={
+                            "tabular-nums font-medium " +
+                            (positive
+                              ? "text-emerald-700 dark:text-emerald-400"
+                              : "text-destructive")
+                          }
+                        >
+                          {positive ? "+" : ""}
+                          {centsToDollars(e.amountCents)}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </CardContent>
+            )}
+          </Card>
+        </section>
+      )}
 
       <section className="mb-8">
         <h2 className="mb-3 text-sm font-medium text-muted-foreground">
@@ -135,6 +210,9 @@ export default async function ProfilePage() {
                 avatarEmoji: user.avatarEmoji ?? "",
                 quietHoursStart: user.quietHoursStart ?? "",
                 quietHoursEnd: user.quietHoursEnd ?? "",
+                birthday: user.birthday
+                  ? user.birthday.toISOString().slice(0, 10)
+                  : "",
               }}
             />
           </CardContent>
