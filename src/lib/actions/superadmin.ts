@@ -2,34 +2,52 @@
 
 import { randomBytes } from "crypto";
 import { revalidatePath } from "next/cache";
-import { Prisma } from "@prisma/client";
+import { Prisma, type FamilyRole } from "@prisma/client";
 import bcrypt from "bcryptjs";
 
+import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { requireSuperAdmin } from "@/lib/superadmin";
 import { sendWelcomeCredentialsEmail } from "@/lib/email";
-import { provisionFamilySchema } from "@/lib/validators/superadmin";
+import {
+  deleteFamilySchema,
+  provisionFamilySchema,
+} from "@/lib/validators/superadmin";
 
 const BCRYPT_ROUNDS = 12;
 
-// Action result shape. On success we return the generated (or supplied)
-// password so the UI can show it ONCE in a copy box — Bassem needs this
-// fallback path because Resend may not be configured (in which case the
-// email won't actually be delivered, and copy-paste is the only way to
-// get the credentials to the new admin).
+// One row in the credentials reveal panel — shown after a successful
+// provision so Bassem can copy/dispatch them manually as a fallback.
+export type CredentialRow = {
+  name: string;
+  email: string;
+  role: FamilyRole;
+  password: string;
+  emailSent: boolean;
+  emailError?: string;
+};
+
 export type SuperAdminActionState =
   | {
       ok: true;
       message?: string;
       familyId?: string;
-      adminUserId?: string;
-      adminEmail?: string;
-      generatedPassword?: string;
-      emailSent?: boolean;
-      emailError?: string;
+      // For provision-family responses (many members at once).
+      credentials?: CredentialRow[];
       loginUrl?: string;
+      // For single-user paths (regenerate one password).
+      single?: {
+        email: string;
+        password: string;
+        emailSent: boolean;
+        emailError?: string;
+      };
     }
-  | { ok: false; error: string; fieldErrors?: Record<string, string[]> }
+  | {
+      ok: false;
+      error: string;
+      fieldErrors?: Record<string, string[]>;
+    }
   | null;
 
 function flattenZodErrors<T extends Record<string, unknown>>(
@@ -43,18 +61,14 @@ function flattenZodErrors<T extends Record<string, unknown>>(
   return out;
 }
 
-// Alphabet excludes look-alikes (0/O/o, 1/I/l/i) so the password is
-// readable when dictated over the phone. 14 chars * log2(56) ≈ 81 bits
-// of entropy — plenty for a temporary credential the user will rotate.
+// Look-alike-free alphabet for human-readable temporary passwords.
 const PASSWORD_ALPHABET =
   "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
 
 function generatePassword(length = 14): string {
-  // Use rejection sampling on a power-of-two range to avoid modulo bias
-  // — important when the random byte value (0..255) isn't a multiple of
-  // the alphabet size (55).
   const out: string[] = [];
-  const max = Math.floor(256 / PASSWORD_ALPHABET.length) * PASSWORD_ALPHABET.length;
+  const max =
+    Math.floor(256 / PASSWORD_ALPHABET.length) * PASSWORD_ALPHABET.length;
   while (out.length < length) {
     const buf = randomBytes(length);
     for (let i = 0; i < buf.length && out.length < length; i++) {
@@ -72,7 +86,7 @@ function loginUrl(): string {
   return `${base.replace(/\/$/, "")}/login`;
 }
 
-// ─── Provision a new family + ADMIN user ────────────────────────────────────
+// ─── Provision a family + one-or-many members ───────────────────────────────
 
 export async function provisionFamilyAction(
   _prev: SuperAdminActionState,
@@ -81,123 +95,156 @@ export async function provisionFamilyAction(
   const gate = await requireSuperAdmin();
   if (!gate.ok) return { ok: false, error: gate.error };
 
+  // The form serializes member rows as JSON in a hidden input — easier
+  // than parsing indexed FormData keys for variable-length lists.
+  let rawMembers: unknown;
+  try {
+    rawMembers = JSON.parse(String(formData.get("members") ?? "[]"));
+  } catch {
+    return { ok: false, error: "Member list was malformed." };
+  }
+
   const parsed = provisionFamilySchema.safeParse({
     familyName: formData.get("familyName"),
-    adminName: formData.get("adminName"),
-    adminEmail: formData.get("adminEmail"),
-    password: formData.get("password") || "",
+    members: rawMembers,
   });
   if (!parsed.success) {
     return {
       ok: false,
-      error: "Please fix the errors below.",
+      error: parsed.error.issues[0]?.message ?? "Please fix the errors below.",
       fieldErrors: flattenZodErrors(parsed.error),
     };
   }
 
-  const { familyName, adminName, adminEmail } = parsed.data;
-  // Auto-generate if no password was supplied. Either way we hash the
-  // FINAL plaintext for storage, and keep the plaintext in scope only
-  // long enough to return it in the action result + email it out.
-  const password = parsed.data.password ?? generatePassword();
-  const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+  const { familyName, members } = parsed.data;
 
-  // Single transaction: Family → User → FamilyMember(ADMIN).
-  // The new user starts with activeFamilyId already set so they skip
-  // /onboarding on first login.
+  // Pre-hash every password so the transaction is purely DB work.
+  // bcrypt is CPU-bound; doing it inside the transaction would extend
+  // the row-lock window for no reason.
+  const prepared = await Promise.all(
+    members.map(async (m) => {
+      const password = m.password ?? generatePassword();
+      const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+      return {
+        name: m.name,
+        email: m.email,
+        role: m.role,
+        password,
+        passwordHash,
+      };
+    }),
+  );
+
   let familyId: string;
-  let adminUserId: string;
   try {
     const result = await prisma.$transaction(async (tx) => {
-      // Belt-and-braces email uniqueness check — the unique index will
-      // also catch this, but doing it here surfaces a cleaner error to
-      // the form before we waste a Family insert.
-      const existing = await tx.user.findUnique({
-        where: { email: adminEmail },
-        select: { id: true },
+      // Bail early if any email already belongs to another user. The
+      // unique index would catch this too, but doing it up-front gives a
+      // cleaner error and avoids partial inserts.
+      const existing = await tx.user.findMany({
+        where: { email: { in: prepared.map((p) => p.email) } },
+        select: { email: true },
       });
-      if (existing) {
-        throw new Prisma.PrismaClientKnownRequestError("Email exists", {
-          code: "P2002",
-          clientVersion: "manual",
+      if (existing.length > 0) {
+        // Surface the conflict on the right field so the UI can mark it.
+        const conflict = existing.map((e) => e.email).join(", ");
+        const idx = prepared.findIndex((p) => existing.some((e) => e.email === p.email));
+        throw new ProvisionError(
+          `Already in use: ${conflict}`,
+          idx >= 0 ? { [`members.${idx}.email`]: ["Already in use"] } : undefined,
+        );
+      }
+
+      const family = await tx.family.create({ data: { name: familyName } });
+
+      // Create each User + matching FamilyMember row. Sequential rather
+      // than Promise.all so any failure aborts the txn cleanly.
+      for (const m of prepared) {
+        const user = await tx.user.create({
+          data: {
+            name: m.name,
+            email: m.email,
+            passwordHash: m.passwordHash,
+            // Legacy User.role mirror — ADMIN for both family roles isn't
+            // accurate, so map MEMBER → USER on the legacy column.
+            role: m.role === "ADMIN" ? "ADMIN" : "USER",
+            activeFamilyId: family.id,
+          },
+        });
+        await tx.familyMember.create({
+          data: { familyId: family.id, userId: user.id, role: m.role },
         });
       }
 
-      const family = await tx.family.create({
-        data: { name: familyName },
-      });
-      const user = await tx.user.create({
-        data: {
-          name: adminName,
-          email: adminEmail,
-          passwordHash,
-          // Legacy User.role column — kept as ADMIN for backward compat
-          // with any code that still inspects it; the real authorization
-          // signal is FamilyMember.role below.
-          role: "ADMIN",
-          activeFamilyId: family.id,
-        },
-      });
-      await tx.familyMember.create({
-        data: {
-          familyId: family.id,
-          userId: user.id,
-          role: "ADMIN",
-        },
-      });
-      return { familyId: family.id, adminUserId: user.id };
+      return { familyId: family.id };
     });
     familyId = result.familyId;
-    adminUserId = result.adminUserId;
   } catch (err) {
+    if (err instanceof ProvisionError) {
+      return { ok: false, error: err.message, fieldErrors: err.fieldErrors };
+    }
     if (
       err instanceof Prisma.PrismaClientKnownRequestError &&
       err.code === "P2002"
     ) {
       return {
         ok: false,
-        error:
-          "A user with that email already exists. Pick a different email or remove the existing user first.",
-        fieldErrors: { adminEmail: ["Email already in use"] },
+        error: "One of those emails is already in use.",
       };
     }
     throw err;
   }
 
-  // Best-effort email. The user has been created either way — if email
-  // delivery fails (Resend unconfigured, or transient API error), the
-  // UI shows the generated password inline so Bassem can send it
-  // manually. We never block on this.
+  // Send a credentials email to every new member. We do this OUTSIDE
+  // the DB transaction — best-effort, never block creation on email.
   const url = loginUrl();
-  const emailResult = await sendWelcomeCredentialsEmail({
-    to: adminEmail,
-    name: adminName,
-    familyName,
-    password,
-    loginUrl: url,
-  });
+  const credentials: CredentialRow[] = await Promise.all(
+    prepared.map(async (m) => {
+      const res = await sendWelcomeCredentialsEmail({
+        to: m.email,
+        name: m.name,
+        familyName,
+        password: m.password,
+        loginUrl: url,
+      });
+      return {
+        name: m.name,
+        email: m.email,
+        role: m.role,
+        password: m.password,
+        emailSent: res.sent,
+        emailError: res.sent ? undefined : res.reason,
+      };
+    }),
+  );
 
   revalidatePath("/superadmin");
+  const allSent = credentials.every((c) => c.emailSent);
   return {
     ok: true,
-    message: emailResult.sent
-      ? `Family "${familyName}" created and credentials emailed to ${adminEmail}.`
-      : `Family "${familyName}" created. Email could not be sent — copy the password below and share it manually.`,
+    message: allSent
+      ? `Family "${familyName}" created. Credentials emailed to ${credentials.length} member${
+          credentials.length === 1 ? "" : "s"
+        }.`
+      : `Family "${familyName}" created. Some emails couldn't be sent — copy the passwords below and share them manually.`,
     familyId,
-    adminUserId,
-    adminEmail,
-    generatedPassword: password,
-    emailSent: emailResult.sent,
-    emailError: emailResult.sent ? undefined : emailResult.reason,
+    credentials,
     loginUrl: url,
   };
 }
 
-// ─── Resend / regenerate credentials for an existing provisioned admin ─────
-//
-// For when the email bounced, the user lost the password before logging
-// in, or Bassem just wants to send a fresh credential. Always generates
-// a NEW password (we can't recover the existing one — it's hashed).
+// Internal error so we can throw → catch with structured field errors
+// out of the inside of the transaction callback.
+class ProvisionError extends Error {
+  fieldErrors?: Record<string, string[]>;
+  constructor(message: string, fieldErrors?: Record<string, string[]>) {
+    super(message);
+    this.fieldErrors = fieldErrors;
+  }
+}
+
+// ─── Regenerate one user's password ─────────────────────────────────────────
+
 export async function regenerateCredentialsAction(
   _prev: SuperAdminActionState,
   formData: FormData,
@@ -248,11 +295,61 @@ export async function regenerateCredentialsAction(
       ? `New password emailed to ${user.email}.`
       : `Password reset. Email could not be sent — copy the password below.`,
     familyId: user.activeFamily.id,
-    adminUserId: user.id,
-    adminEmail: user.email,
-    generatedPassword: password,
-    emailSent: emailResult.sent,
-    emailError: emailResult.sent ? undefined : emailResult.reason,
     loginUrl: url,
+    single: {
+      email: user.email,
+      password,
+      emailSent: emailResult.sent,
+      emailError: emailResult.sent ? undefined : emailResult.reason,
+    },
+  };
+}
+
+// ─── Delete a family (everything inside it goes too) ────────────────────────
+//
+// Prisma's onDelete: Cascade on Family → (FamilyMember, Task, TaskTemplate,
+// ShoppingItem, AllowanceEntry, FamilyInvite) means a single delete wipes
+// the tenant clean. Member User rows are NOT removed (they may belong to
+// other families; their `activeFamilyId` flips to NULL via SetNull and
+// they get bounced through onboarding on next sign-in).
+//
+// Safety: refuses to delete the super-admin's OWN active family — that's
+// nearly always a foot-gun. Switch families first, then delete.
+
+export async function deleteFamilyAction(
+  _prev: SuperAdminActionState,
+  formData: FormData,
+): Promise<SuperAdminActionState> {
+  const gate = await requireSuperAdmin();
+  if (!gate.ok) return { ok: false, error: gate.error };
+
+  const parsed = deleteFamilySchema.safeParse({
+    familyId: formData.get("familyId"),
+  });
+  if (!parsed.success) return { ok: false, error: "Invalid family id." };
+
+  // Re-read session for the super-admin's CURRENT active family — we don't
+  // trust the gate's session for this since /superadmin doesn't depend on it.
+  const session = await auth();
+  if (session?.user?.activeFamilyId === parsed.data.familyId) {
+    return {
+      ok: false,
+      error:
+        "Can't delete your own active family. Switch to a different family first, then delete.",
+    };
+  }
+
+  const family = await prisma.family.findUnique({
+    where: { id: parsed.data.familyId },
+    select: { id: true, name: true },
+  });
+  if (!family) return { ok: false, error: "Family not found." };
+
+  await prisma.family.delete({ where: { id: family.id } });
+
+  revalidatePath("/superadmin");
+  return {
+    ok: true,
+    message: `Deleted "${family.name}" and all of its data.`,
   };
 }

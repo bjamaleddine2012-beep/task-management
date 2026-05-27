@@ -1,3 +1,4 @@
+import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { ProvisionForm } from "./_components/provision-form";
 import { FamiliesList, type FamilyRow } from "./_components/families-list";
@@ -9,6 +10,8 @@ export const dynamic = "force-dynamic";
 // is family-scoped), plus the provisioning form.
 
 export default async function SuperAdminPage() {
+  const session = await auth();
+  const myActiveFamilyId = session?.user?.activeFamilyId ?? null;
   // Single round-trip: pull families with member counts + the admin's
   // contact info (for the "resend credentials" affordance).
   const families = await prisma.family.findMany({
@@ -48,6 +51,7 @@ export default async function SuperAdminPage() {
       adminUserId: firstAdmin?.id ?? null,
       adminName: firstAdmin?.name ?? null,
       adminEmail: firstAdmin?.email ?? null,
+      isMyActiveFamily: f.id === myActiveFamilyId,
     };
   });
 
