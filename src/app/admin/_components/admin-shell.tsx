@@ -7,6 +7,7 @@ import {
   Activity,
   BarChart3,
   DollarSign,
+  Home,
   LayoutDashboard,
   Library,
   ListChecks,
@@ -23,6 +24,7 @@ import { cn } from "@/lib/utils";
 
 const NAV = [
   { href: "/admin", label: "Overview", icon: LayoutDashboard },
+  { href: "/admin/family", label: "Family", icon: Home },
   { href: "/admin/users", label: "Users", icon: Users },
   { href: "/admin/tasks", label: "Tasks", icon: ListChecks },
   { href: "/admin/templates", label: "Templates", icon: Library },
@@ -35,10 +37,12 @@ const NAV = [
 
 export function AdminShell({
   email,
+  familyName,
   signOutAction,
   children,
 }: {
   email: string;
+  familyName: string;
   signOutAction: () => Promise<void>;
   children: React.ReactNode;
 }) {
@@ -82,6 +86,7 @@ export function AdminShell({
       <aside className="hidden w-60 flex-shrink-0 flex-col border-r bg-background md:flex">
         <SidebarInner
           email={email}
+          familyName={familyName}
           pathname={pathname}
           signOutAction={signOutAction}
         />
@@ -109,6 +114,7 @@ export function AdminShell({
             </div>
             <SidebarInner
               email={email}
+              familyName={familyName}
               pathname={pathname}
               signOutAction={signOutAction}
             />
@@ -127,10 +133,12 @@ export function AdminShell({
 
 function SidebarInner({
   email,
+  familyName,
   pathname,
   signOutAction,
 }: {
   email: string;
+  familyName: string;
   pathname: string;
   signOutAction: () => Promise<void>;
 }) {
@@ -138,7 +146,7 @@ function SidebarInner({
     <>
       <div className="hidden border-b px-6 py-5 md:block">
         <Link href="/admin" className="text-base font-semibold">
-          Admin Panel
+          {familyName}
         </Link>
         <p className="mt-1 text-xs text-muted-foreground">{email}</p>
       </div>

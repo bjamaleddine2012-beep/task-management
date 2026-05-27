@@ -29,25 +29,30 @@ function timeAgo(then: Date, now: Date): string {
 }
 
 // Server component — fetches recent TaskActivity rows joined with actor +
-// task title. Use `limit` for compact widgets (e.g. 5 on dashboard) vs
-// the full feed page.
+// task title, ALWAYS scoped to a family. Cross-tenant data never appears
+// because the underlying task's `familyId` must match.
+//
+// Pass `userId` to additionally filter to a single user's activity.
 export async function ActivityFeed({
   limit = 20,
+  familyId,
   userId,
 }: {
   limit?: number;
-  // If set, scope to activity where the actor is this user OR the task
-  // is assigned to them. Used on personal /profile or user dashboard.
+  familyId: string;
   userId?: string;
 }) {
-  const where = userId
-    ? {
-        OR: [
-          { actorId: userId },
-          { task: { assignedToId: userId } },
-        ],
-      }
-    : {};
+  const where = {
+    task: { familyId }, // tenant key
+    ...(userId
+      ? {
+          OR: [
+            { actorId: userId },
+            { task: { familyId, assignedToId: userId } },
+          ],
+        }
+      : {}),
+  };
 
   const activities = await prisma.taskActivity.findMany({
     where,

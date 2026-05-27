@@ -30,6 +30,7 @@ export async function GET(request: Request) {
     where: {
       active: true,
       intervalDays: { not: null, gt: 0 },
+      familyId: { not: null }, // skip orphan templates (shouldn't exist after backfill)
     },
     select: {
       id: true,
@@ -42,6 +43,7 @@ export async function GET(request: Request) {
       dueHourLocal: true,
       lastSpawnedAt: true,
       createdById: true,
+      familyId: true,
     },
   });
 
@@ -83,6 +85,9 @@ export async function GET(request: Request) {
           dueDate: due,
           assignedToId: tpl.defaultAssigneeId,
           createdById: tpl.createdById,
+          // Spawned task inherits its template's family — guaranteed
+          // non-null by the findMany filter above.
+          familyId: tpl.familyId!,
           fromTemplateId: tpl.id,
           subtasks:
             subtaskTitles.length > 0
@@ -140,13 +145,21 @@ async function checkBirthdays(now: Date): Promise<number> {
   let count = 0;
   for (const u of todays) {
     const name = u.name ?? u.email;
-    // Tell admins.
-    void notifyAdmins({
-      title: `🎂 It's ${name}'s birthday today!`,
-      body: "Don't forget to wish them.",
-      url: "/",
-      tag: `birthday:${u.id}:${now.toISOString().slice(0, 10)}`,
+    // Notify admins of every family this person belongs to. (Family-
+    // scoped, never cross-tenant — admins of a family the birthday
+    // person doesn't belong to shouldn't get pinged.)
+    const memberships = await prisma.familyMember.findMany({
+      where: { userId: u.id },
+      select: { familyId: true },
     });
+    for (const m of memberships) {
+      void notifyAdmins(m.familyId, {
+        title: `🎂 It's ${name}'s birthday today!`,
+        body: "Don't forget to wish them.",
+        url: "/",
+        tag: `birthday:${u.id}:${now.toISOString().slice(0, 10)}`,
+      });
+    }
     // Tell the person.
     void notifyUser(u.id, {
       title: "🎉 Happy birthday!",

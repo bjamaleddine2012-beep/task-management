@@ -48,6 +48,8 @@ const STATUS_LABEL: Record<TaskStatus, string> = {
 export default async function DashboardPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
+  const familyId = session.user.activeFamilyId;
+  if (!familyId) redirect("/onboarding");
 
   const [me, tasks] = await Promise.all([
     prisma.user.findUnique({
@@ -55,7 +57,7 @@ export default async function DashboardPage() {
       select: { name: true, email: true, avatarColor: true, avatarEmoji: true },
     }),
     prisma.task.findMany({
-      where: { assignedToId: session.user.id },
+      where: { assignedToId: session.user.id, familyId },
       orderBy: [{ status: "asc" }, { dueDate: "asc" }],
       select: {
         id: true,
@@ -163,7 +165,12 @@ export default async function DashboardPage() {
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">My tasks</h1>
             <p className="text-sm text-muted-foreground">
-              Hi {me?.name ?? session.user.email}, you have{" "}
+              {session.user.activeFamilyName && (
+                <span className="font-medium">
+                  {session.user.activeFamilyName} ·{" "}
+                </span>
+              )}
+              {me?.name ?? session.user.email}, you have{" "}
               <span className="font-medium text-foreground">{open.length}</span>{" "}
               open task{open.length === 1 ? "" : "s"}.
             </p>
@@ -276,7 +283,7 @@ export default async function DashboardPage() {
             View all →
           </Link>
         </div>
-        <ActivityFeed limit={5} userId={session.user.id} />
+        <ActivityFeed limit={5} familyId={familyId} userId={session.user.id} />
       </section>
     </div>
   );

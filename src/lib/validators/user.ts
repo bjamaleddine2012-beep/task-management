@@ -1,11 +1,14 @@
 import { z } from "zod";
-import { Role } from "@prisma/client";
+import { FamilyRole } from "@prisma/client";
 
 const passwordRule = z
   .string()
   .min(8, "Password must be at least 8 characters")
   .max(128, "Password is too long");
 
+// `role` here is the new family role (ADMIN / MEMBER). The legacy
+// User.role enum (ADMIN / USER) is no longer set from the admin UI; we
+// just keep it around in the DB for compatibility with older code.
 export const createUserSchema = z.object({
   name: z
     .string()
@@ -18,7 +21,7 @@ export const createUserSchema = z.object({
     .toLowerCase()
     .email("Enter a valid email"),
   password: passwordRule,
-  role: z.nativeEnum(Role),
+  role: z.nativeEnum(FamilyRole),
 });
 
 export const updateUserSchema = z.object({
@@ -29,7 +32,7 @@ export const updateUserSchema = z.object({
     .min(1, "Name is required")
     .max(80, "Name is too long")
     .optional(),
-  role: z.nativeEnum(Role).optional(),
+  role: z.nativeEnum(FamilyRole).optional(),
 });
 
 export const resetPasswordSchema = z.object({

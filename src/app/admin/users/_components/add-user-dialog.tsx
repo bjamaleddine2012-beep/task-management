@@ -104,12 +104,12 @@ export function AddUserDialog() {
           <Field id="role" label="Role" error={fieldError("role")}>
             {/* Hidden input keeps the value form-data accessible — Radix Select
                 doesn't post a native value on its own. */}
-            <Select name="role" defaultValue="USER">
+            <Select name="role" defaultValue="MEMBER">
               <SelectTrigger id="role">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="USER">User</SelectItem>
+                <SelectItem value="MEMBER">Member</SelectItem>
                 <SelectItem value="ADMIN">Admin</SelectItem>
               </SelectContent>
             </Select>

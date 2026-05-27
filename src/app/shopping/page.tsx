@@ -12,7 +12,11 @@ export default async function ShoppingPage() {
   const session = await auth();
   if (!session?.user) redirect("/login?callbackUrl=/shopping");
 
+  const familyId = session.user.activeFamilyId;
+  if (!familyId) redirect("/onboarding");
+
   const items = await prisma.shoppingItem.findMany({
+    where: { familyId },
     orderBy: [{ checkedAt: "asc" }, { addedAt: "asc" }],
     include: {
       addedBy: {

@@ -37,28 +37,39 @@ export type NotificationPayload = {
   tag?: string;
 };
 
-// Compute how many items demand this user's attention right now.
-//   Regular users: count of their non-completed tasks.
-//   Admins: that + count of all submissions awaiting review.
+// Compute how many items demand this user's attention right now,
+// scoped to their currently-active family.
+//   Family members: their own non-completed tasks.
+//   Family admins: that + every submission awaiting review in the family.
 // Used to set the home-screen icon badge (red bubble).
 export async function getBadgeCount(userId: string): Promise<number> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
+    select: { activeFamilyId: true },
+  });
+  if (!user?.activeFamilyId) return 0;
+
+  const familyId = user.activeFamilyId;
+
+  // The session role might be stale; re-read membership to be sure.
+  const membership = await prisma.familyMember.findUnique({
+    where: { familyId_userId: { familyId, userId } },
     select: { role: true },
   });
-  if (!user) return 0;
+  if (!membership) return 0;
 
   const myOpen = await prisma.task.count({
     where: {
+      familyId,
       assignedToId: userId,
       status: { not: "COMPLETED" },
     },
   });
 
-  if (user.role !== "ADMIN") return myOpen;
+  if (membership.role !== "ADMIN") return myOpen;
 
   const toReview = await prisma.task.count({
-    where: { status: "SUBMITTED" },
+    where: { familyId, status: "SUBMITTED" },
   });
   return myOpen + toReview;
 }
@@ -135,11 +146,32 @@ export async function notifyUser(
   );
 }
 
-export async function notifyAdmins(payload: NotificationPayload): Promise<void> {
+// Notify every ADMIN of the given family. Always pass the familyId
+// explicitly — never let this fall back to "all admins" globally, or
+// admins of other families would get cross-tenant pings.
+export async function notifyFamilyAdmins(
+  familyId: string,
+  payload: NotificationPayload,
+): Promise<void> {
   if (!ensureConfigured()) return;
-  const admins = await prisma.user.findMany({
-    where: { role: "ADMIN" },
-    select: { id: true },
+  const admins = await prisma.familyMember.findMany({
+    where: { familyId, role: "ADMIN" },
+    select: { userId: true },
   });
-  await Promise.all(admins.map((a) => notifyUser(a.id, payload)));
+  await Promise.all(admins.map((a) => notifyUser(a.userId, payload)));
+}
+
+// Legacy name kept for callers that already have a familyId in scope.
+// They should call notifyFamilyAdmins; this just forwards.
+export async function notifyAdmins(
+  payloadOrFamilyId: NotificationPayload | string,
+  maybePayload?: NotificationPayload,
+): Promise<void> {
+  if (typeof payloadOrFamilyId === "string" && maybePayload) {
+    return notifyFamilyAdmins(payloadOrFamilyId, maybePayload);
+  }
+  // No familyId provided — refuse to broadcast globally.
+  console.warn(
+    "[notify] notifyAdmins called without familyId — refusing to broadcast cross-tenant.",
+  );
 }

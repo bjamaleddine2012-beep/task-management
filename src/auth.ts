@@ -35,31 +35,56 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
         const ok = await bcrypt.compare(password, user.passwordHash);
         if (!ok) return null;
 
+        // Role is determined per-family in the jwt() callback below
+        // (using FamilyMember.role of the user's active family).
         return {
           id: user.id,
           email: user.email,
           name: user.name,
           image: user.image,
-          role: user.role,
         };
       },
     }),
   ],
   callbacks: {
     ...authConfig.callbacks,
-    // Bake id + role into the JWT at sign-in. On `update()` from a client,
-    // re-read role from the DB so admin role changes take effect without
-    // forcing the user to log out.
+    // Bake id + active family + role-in-that-family into the JWT.
+    //
+    // Re-read on `session.update()` so role changes (e.g. someone gets
+    // promoted to family ADMIN, or switches active family) take effect
+    // without the user signing out and back in.
     jwt: async ({ token, user, trigger }) => {
-      if (user) {
-        token.id = user.id;
-        token.role = user.role;
-      } else if (trigger === "update" && token.id) {
+      const userId = (user?.id as string | undefined) ?? (token.id as string | undefined);
+      if (!userId) return token;
+
+      // First sign-in OR session refresh — re-compute everything.
+      if (user || trigger === "update") {
         const fresh = await prisma.user.findUnique({
-          where: { id: token.id as string },
-          select: { role: true },
+          where: { id: userId },
+          select: {
+            activeFamilyId: true,
+            activeFamily: { select: { name: true } },
+          },
         });
-        if (fresh) token.role = fresh.role;
+
+        token.id = userId;
+        token.activeFamilyId = fresh?.activeFamilyId ?? undefined;
+        token.activeFamilyName = fresh?.activeFamily?.name ?? undefined;
+
+        if (fresh?.activeFamilyId) {
+          const membership = await prisma.familyMember.findUnique({
+            where: {
+              familyId_userId: {
+                familyId: fresh.activeFamilyId,
+                userId,
+              },
+            },
+            select: { role: true },
+          });
+          token.role = membership?.role;
+        } else {
+          token.role = undefined;
+        }
       }
       return token;
     },

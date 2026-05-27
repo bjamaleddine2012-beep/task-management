@@ -6,6 +6,7 @@ import { Prisma } from "@prisma/client";
 import bcrypt from "bcryptjs";
 
 import { auth } from "@/auth";
+import { requireFamilyAdmin } from "@/lib/family";
 import { prisma } from "@/lib/prisma";
 import {
   createUserSchema,
@@ -23,15 +24,15 @@ export type ActionState =
 
 type AdminGate =
   | { ok: false; error: string }
-  | { ok: true; session: Session };
+  | {
+      ok: true;
+      session: Session;
+      familyId: string;
+      role: "ADMIN" | "MEMBER";
+    };
 
 async function requireAdmin(): Promise<AdminGate> {
-  const session = await auth();
-  if (!session?.user) return { ok: false, error: "Not authenticated" };
-  if (session.user.role !== "ADMIN") {
-    return { ok: false, error: "Admin access required" };
-  }
-  return { ok: true, session };
+  return (await requireFamilyAdmin()) as AdminGate;
 }
 
 function flattenZodErrors<T extends Record<string, unknown>>(
@@ -72,9 +73,41 @@ export async function createUserAction(
   const { name, email, password, role } = parsed.data;
   const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
+  // Create user + family-membership atomically. If the email already
+  // exists in another family, surface a clear error rather than silently
+  // adding them.
   try {
-    await prisma.user.create({
-      data: { name, email, passwordHash, role },
+    await prisma.$transaction(async (tx) => {
+      const existing = await tx.user.findUnique({
+        where: { email },
+        select: { id: true },
+      });
+      if (existing) {
+        // Could be: same email, different family. The admin should use the
+        // invite flow for that.
+        throw new Prisma.PrismaClientKnownRequestError("Email exists", {
+          code: "P2002",
+          clientVersion: "manual",
+        });
+      }
+      const u = await tx.user.create({
+        data: {
+          name,
+          email,
+          passwordHash,
+          // Legacy User.role mirror — set ADMIN if they're being made
+          // family admin so older code paths still see them as admin.
+          role: role === "ADMIN" ? "ADMIN" : "USER",
+          activeFamilyId: gate.familyId,
+        },
+      });
+      await tx.familyMember.create({
+        data: {
+          familyId: gate.familyId,
+          userId: u.id,
+          role,
+        },
+      });
     });
   } catch (err) {
     if (
@@ -83,7 +116,7 @@ export async function createUserAction(
     ) {
       return {
         ok: false,
-        error: "A user with that email already exists.",
+        error: "A user with that email already exists. Use the invite link instead.",
         fieldErrors: { email: ["Email already in use"] },
       };
     }
@@ -91,6 +124,7 @@ export async function createUserAction(
   }
 
   revalidatePath("/admin/users");
+  revalidatePath("/admin/family");
   return { ok: true, message: `User ${email} created.` };
 }
 
@@ -119,32 +153,45 @@ export async function updateUserAction(
 
   const { id, name, role } = parsed.data;
 
-  // Don't let the last admin demote themselves into a USER-only system.
-  if (role === "USER") {
-    const target = await prisma.user.findUnique({
-      where: { id },
-      select: { role: true },
+  // Verify the target is a member of this family.
+  const target = await prisma.familyMember.findUnique({
+    where: { familyId_userId: { familyId: gate.familyId, userId: id } },
+    select: { role: true },
+  });
+  if (!target) {
+    return { ok: false, error: "User is not in this family." };
+  }
+
+  // Don't let the last admin demote themselves in THIS family.
+  if (role === "MEMBER" && target.role === "ADMIN") {
+    const adminCount = await prisma.familyMember.count({
+      where: { familyId: gate.familyId, role: "ADMIN" },
     });
-    if (target?.role === "ADMIN") {
-      const adminCount = await prisma.user.count({ where: { role: "ADMIN" } });
-      if (adminCount <= 1) {
-        return {
-          ok: false,
-          error: "You can't demote the last remaining admin.",
-        };
-      }
+    if (adminCount <= 1) {
+      return {
+        ok: false,
+        error: "You can't demote the last remaining admin.",
+      };
     }
   }
 
-  await prisma.user.update({
-    where: { id },
-    data: {
-      ...(name !== undefined && { name }),
-      ...(role !== undefined && { role }),
-    },
+  await prisma.$transaction(async (tx) => {
+    if (name !== undefined) {
+      await tx.user.update({
+        where: { id },
+        data: { name },
+      });
+    }
+    if (role !== undefined) {
+      await tx.familyMember.update({
+        where: { familyId_userId: { familyId: gate.familyId, userId: id } },
+        data: { role },
+      });
+    }
   });
 
   revalidatePath("/admin/users");
+  revalidatePath("/admin/family");
   return { ok: true, message: "User updated." };
 }
 
@@ -168,6 +215,18 @@ export async function resetPasswordAction(
       error: "Please fix the errors below.",
       fieldErrors: flattenZodErrors(parsed.error),
     };
+  }
+
+  // Cross-family password resets are forbidden: verify target is in this
+  // family first.
+  const target = await prisma.familyMember.findUnique({
+    where: {
+      familyId_userId: { familyId: gate.familyId, userId: parsed.data.id },
+    },
+    select: { userId: true },
+  });
+  if (!target) {
+    return { ok: false, error: "User is not in this family." };
   }
 
   const passwordHash = await bcrypt.hash(parsed.data.password, BCRYPT_ROUNDS);
@@ -194,26 +253,46 @@ export async function deleteUserAction(
     return { ok: false, error: "Invalid user id." };
   }
 
-  // Refuse to delete yourself or the last admin.
+  // Refuse to delete yourself or the last admin of this family.
   if (parsed.data.id === gate.session.user.id) {
     return { ok: false, error: "You can't delete your own account." };
   }
 
-  const target = await prisma.user.findUnique({
-    where: { id: parsed.data.id },
+  // Only operate on users who are members of this family.
+  const target = await prisma.familyMember.findUnique({
+    where: {
+      familyId_userId: { familyId: gate.familyId, userId: parsed.data.id },
+    },
     select: { role: true },
   });
   if (!target) {
-    return { ok: false, error: "User not found." };
+    return { ok: false, error: "User is not in this family." };
   }
   if (target.role === "ADMIN") {
-    const adminCount = await prisma.user.count({ where: { role: "ADMIN" } });
+    const adminCount = await prisma.familyMember.count({
+      where: { familyId: gate.familyId, role: "ADMIN" },
+    });
     if (adminCount <= 1) {
       return { ok: false, error: "You can't delete the last remaining admin." };
     }
   }
 
-  await prisma.user.delete({ where: { id: parsed.data.id } });
+  // Remove the membership. We don't delete the User row itself — the user
+  // could be a member of another family, and their authored history (e.g.
+  // tasks they created elsewhere) should stay intact.
+  await prisma.$transaction([
+    prisma.familyMember.deleteMany({
+      where: { familyId: gate.familyId, userId: parsed.data.id },
+    }),
+    // If they were active in this family, drop the active reference so
+    // they're forced through onboarding next time.
+    prisma.user.updateMany({
+      where: { id: parsed.data.id, activeFamilyId: gate.familyId },
+      data: { activeFamilyId: null },
+    }),
+  ]);
+
   revalidatePath("/admin/users");
-  return { ok: true, message: "User deleted." };
+  revalidatePath("/admin/family");
+  return { ok: true, message: "Removed from family." };
 }

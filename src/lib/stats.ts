@@ -11,7 +11,14 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // We allow ending yesterday so a streak doesn't break the moment midnight
 // hits — if you complete one tomorrow, the streak picks up from yesterday.
 // If you skip a full day, it resets.
-export async function getStreak(userId: string): Promise<number> {
+//
+// Pass `familyId` to scope to a single family. Without it we count
+// completions across every family the user is in (used for the global
+// profile streak number).
+export async function getStreak(
+  userId: string,
+  familyId?: string,
+): Promise<number> {
   const sinceDays = 365;
   const since = new Date(Date.now() - sinceDays * DAY_MS);
 
@@ -20,6 +27,7 @@ export async function getStreak(userId: string): Promise<number> {
       assignedToId: userId,
       status: "COMPLETED",
       reviewedAt: { gte: since, not: null },
+      ...(familyId ? { familyId } : {}),
     },
     select: { reviewedAt: true },
     orderBy: { reviewedAt: "desc" },
@@ -83,25 +91,32 @@ const ACHIEVEMENT_DEFS = [
   { id: "points500", name: "Treasury", desc: "Earn 500 points", emoji: "🏦", needs: { points: 500 } },
 ] as const;
 
-export async function getUserStats(userId: string): Promise<UserStats> {
+// Pass `familyId` to scope stats to a single family (the user's currently-
+// active one). Without it, counts span every family they belong to.
+export async function getUserStats(
+  userId: string,
+  familyId?: string,
+): Promise<UserStats> {
+  const familyClause = familyId ? { familyId } : {};
   const [user, completed, open, rejected, streak] = await Promise.all([
     prisma.user.findUnique({
       where: { id: userId },
       select: { points: true },
     }),
     prisma.task.count({
-      where: { assignedToId: userId, status: "COMPLETED" },
+      where: { assignedToId: userId, status: "COMPLETED", ...familyClause },
     }),
     prisma.task.count({
       where: {
         assignedToId: userId,
         status: { notIn: ["COMPLETED", "REJECTED"] },
+        ...familyClause,
       },
     }),
     prisma.task.count({
-      where: { assignedToId: userId, status: "REJECTED" },
+      where: { assignedToId: userId, status: "REJECTED", ...familyClause },
     }),
-    getStreak(userId),
+    getStreak(userId, familyId),
   ]);
   const points = user?.points ?? 0;
 

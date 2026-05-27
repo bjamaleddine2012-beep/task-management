@@ -1,6 +1,6 @@
 import type { NextAuthConfig } from "next-auth";
 import Google from "next-auth/providers/google";
-import type { Role } from "@prisma/client";
+import type { FamilyRole, Role } from "@prisma/client";
 
 // Edge-safe slice of the NextAuth config.
 //
@@ -22,11 +22,13 @@ const providers: Provider[] = googleEnabled
       Google({
         clientId: process.env.AUTH_GOOGLE_ID,
         clientSecret: process.env.AUTH_GOOGLE_SECRET,
-        // Auto-promote a known admin email on first OAuth signup. Optional —
-        // remove if you want every Google user to start as USER.
+        // We no longer assign a global role at signup. New Google users
+        // arrive without a family; the proxy gate sends them to
+        // /onboarding where they create or join one. The legacy User.role
+        // column is still populated for backward compatibility.
         profile(profile) {
           const adminEmail = process.env.ADMIN_EMAIL?.toLowerCase();
-          const role: Role =
+          const legacyRole: Role =
             adminEmail && profile.email?.toLowerCase() === adminEmail
               ? "ADMIN"
               : "USER";
@@ -35,7 +37,7 @@ const providers: Provider[] = googleEnabled
             name: profile.name,
             email: profile.email,
             image: profile.picture,
-            role,
+            role: legacyRole as unknown as FamilyRole, // type slot kept for NextAuth; real role is FamilyMember.role
           };
         },
       }),
@@ -57,7 +59,13 @@ export default {
         session.user.id = token.id as string;
       }
       if (token.role && session.user) {
-        session.user.role = token.role as Role;
+        session.user.role = token.role as FamilyRole;
+      }
+      if (token.activeFamilyId && session.user) {
+        session.user.activeFamilyId = token.activeFamilyId as string;
+        session.user.activeFamilyName = token.activeFamilyName as
+          | string
+          | undefined;
       }
       return session;
     },
@@ -66,10 +74,13 @@ export default {
     authorized({ auth, request: { nextUrl } }) {
       const isLoggedIn = !!auth?.user;
       const role = auth?.user?.role;
+      const activeFamilyId = auth?.user?.activeFamilyId;
       const path = nextUrl.pathname;
 
       const isOnLogin = path.startsWith("/login");
       const isOnAdmin = path.startsWith("/admin");
+      const isOnOnboarding = path.startsWith("/onboarding");
+      const isOnJoin = path.startsWith("/join/");
 
       // Public assets. The matcher SHOULD already exclude these but treat it
       // as defense-in-depth — the negative lookahead can be brittle, and we
@@ -86,7 +97,13 @@ export default {
 
       if (isOnLogin) {
         if (isLoggedIn) {
-          const dest = role === "ADMIN" ? "/admin" : "/";
+          // Already signed in: send onboarding-less users to onboarding,
+          // family admins to /admin, plain members to /.
+          const dest = !activeFamilyId
+            ? "/onboarding"
+            : role === "ADMIN"
+              ? "/admin"
+              : "/";
           return Response.redirect(new URL(dest, nextUrl));
         }
         return true;
@@ -96,6 +113,17 @@ export default {
         const url = new URL("/login", nextUrl);
         url.searchParams.set("callbackUrl", path);
         return Response.redirect(url);
+      }
+
+      // Multi-tenant gate: a signed-in user with no active family must
+      // create or join one before doing anything else. /join/<token> and
+      // /onboarding are the only paths that work without a family.
+      if (!activeFamilyId && !isOnOnboarding && !isOnJoin) {
+        return Response.redirect(new URL("/onboarding", nextUrl));
+      }
+      // If they DO have a family, keep them out of onboarding.
+      if (activeFamilyId && isOnOnboarding) {
+        return Response.redirect(new URL("/", nextUrl));
       }
 
       if (isOnAdmin && role !== "ADMIN") {

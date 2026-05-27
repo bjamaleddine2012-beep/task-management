@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { auth } from "@/auth";
+import { requireFamilyAdmin } from "@/lib/family";
 import { prisma } from "@/lib/prisma";
 import {
   addAllowanceSchema,
@@ -17,12 +18,7 @@ export type AllowanceActionState =
   | null;
 
 async function requireAdmin() {
-  const session = await auth();
-  if (!session?.user) return { ok: false as const, error: "Not authenticated" };
-  if (session.user.role !== "ADMIN") {
-    return { ok: false as const, error: "Admin access required" };
-  }
-  return { ok: true as const, session };
+  return requireFamilyAdmin();
 }
 
 function flattenZodErrors<T extends Record<string, unknown>>(
@@ -62,12 +58,24 @@ export async function addAllowanceAction(
   const cents = dollarsToCents(parsed.data.amountDollars);
   if (cents === 0) return { ok: false, error: "Amount can't be zero." };
 
+  // Target user must be a member of the admin's active family.
+  const member = await prisma.familyMember.findUnique({
+    where: {
+      familyId_userId: { familyId: gate.familyId, userId: parsed.data.userId },
+    },
+    select: { userId: true },
+  });
+  if (!member) {
+    return { ok: false, error: "That user is not in your family." };
+  }
+
   await prisma.allowanceEntry.create({
     data: {
       userId: parsed.data.userId,
       amountCents: cents,
       reason: parsed.data.reason,
       createdById: gate.session.user.id,
+      familyId: gate.familyId,
     },
   });
 
@@ -97,7 +105,11 @@ export async function deleteAllowanceAction(
   const parsed = deleteAllowanceSchema.safeParse({ id: formData.get("id") });
   if (!parsed.success) return { ok: false, error: "Invalid id." };
 
-  await prisma.allowanceEntry.delete({ where: { id: parsed.data.id } });
+  const r = await prisma.allowanceEntry.deleteMany({
+    where: { id: parsed.data.id, familyId: gate.familyId },
+  });
+  if (r.count === 0)
+    return { ok: false, error: "Entry not found in this family." };
   revalidatePath("/admin/allowance");
   revalidatePath("/profile");
   return { ok: true };

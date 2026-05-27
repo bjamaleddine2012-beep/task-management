@@ -16,13 +16,10 @@ export type TemplateActionState =
   | { ok: false; error: string; fieldErrors?: Record<string, string[]> }
   | null;
 
+import { requireFamilyAdmin } from "@/lib/family";
+
 async function requireAdmin() {
-  const session = await auth();
-  if (!session?.user) return { ok: false as const, error: "Not authenticated" };
-  if (session.user.role !== "ADMIN") {
-    return { ok: false as const, error: "Admin access required" };
-  }
-  return { ok: true as const, session };
+  return requireFamilyAdmin();
 }
 
 function flattenZodErrors<T extends Record<string, unknown>>(
@@ -79,6 +76,7 @@ export async function createTemplateAction(
       dueHourLocal: data.dueHourLocal,
       active: data.active,
       createdById: gate.session.user.id,
+      familyId: gate.familyId,
     },
   });
 
@@ -108,8 +106,8 @@ export async function updateTemplateAction(
   }
 
   const data = parsed.data;
-  await prisma.taskTemplate.update({
-    where: { id: data.id },
+  const r = await prisma.taskTemplate.updateMany({
+    where: { id: data.id, familyId: gate.familyId },
     data: {
       name: data.name,
       title: data.title,
@@ -122,6 +120,8 @@ export async function updateTemplateAction(
       active: data.active,
     },
   });
+  if (r.count === 0)
+    return { ok: false, error: "Template not found in this family." };
 
   revalidatePath("/admin/templates");
   return { ok: true, message: "Template updated." };
@@ -139,7 +139,11 @@ export async function deleteTemplateAction(
   const parsed = deleteTemplateSchema.safeParse({ id: formData.get("id") });
   if (!parsed.success) return { ok: false, error: "Invalid id." };
 
-  await prisma.taskTemplate.delete({ where: { id: parsed.data.id } });
+  const r = await prisma.taskTemplate.deleteMany({
+    where: { id: parsed.data.id, familyId: gate.familyId },
+  });
+  if (r.count === 0)
+    return { ok: false, error: "Template not found in this family." };
   revalidatePath("/admin/templates");
   return { ok: true, message: "Template deleted." };
 }
@@ -159,10 +163,10 @@ export async function spawnFromTemplateAction(
   });
   if (!parsed.success) return { ok: false, error: "Invalid input." };
 
-  const tpl = await prisma.taskTemplate.findUnique({
-    where: { id: parsed.data.id },
+  const tpl = await prisma.taskTemplate.findFirst({
+    where: { id: parsed.data.id, familyId: gate.familyId },
   });
-  if (!tpl) return { ok: false, error: "Template not found." };
+  if (!tpl) return { ok: false, error: "Template not found in this family." };
 
   const assigneeId = parsed.data.assignedToId ?? tpl.defaultAssigneeId;
   if (!assigneeId) {
@@ -178,6 +182,15 @@ export async function spawnFromTemplateAction(
   const due = new Date();
   due.setHours(tpl.dueHourLocal ?? 17, 0, 0, 0);
 
+  // The assignee must be in this family.
+  const member = await prisma.familyMember.findUnique({
+    where: { familyId_userId: { familyId: gate.familyId, userId: assigneeId } },
+    select: { userId: true },
+  });
+  if (!member) {
+    return { ok: false, error: "Assignee is not in this family." };
+  }
+
   const task = await prisma.task.create({
     data: {
       title: tpl.title,
@@ -186,6 +199,7 @@ export async function spawnFromTemplateAction(
       dueDate: due,
       assignedToId: assigneeId,
       createdById: gate.session.user.id,
+      familyId: gate.familyId,
       fromTemplateId: tpl.id,
       subtasks:
         subtaskTitles.length > 0

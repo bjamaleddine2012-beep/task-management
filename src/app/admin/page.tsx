@@ -19,12 +19,17 @@ export const dynamic = "force-dynamic";
 
 export default async function AdminOverviewPage() {
   const session = await auth();
+  const familyId = session?.user?.activeFamilyId;
+  if (!familyId) return null;
+
   const [userCount, adminCount, taskCount, openTaskCount, badgeCount] =
     await Promise.all([
-      prisma.user.count(),
-      prisma.user.count({ where: { role: "ADMIN" } }),
-      prisma.task.count(),
-      prisma.task.count({ where: { status: { not: "COMPLETED" } } }),
+      prisma.familyMember.count({ where: { familyId } }),
+      prisma.familyMember.count({ where: { familyId, role: "ADMIN" } }),
+      prisma.task.count({ where: { familyId } }),
+      prisma.task.count({
+        where: { familyId, status: { not: "COMPLETED" } },
+      }),
       session?.user?.id ? getBadgeCount(session.user.id) : Promise.resolve(0),
     ]);
 
@@ -89,7 +94,7 @@ export default async function AdminOverviewPage() {
             View all →
           </Link>
         </div>
-        <ActivityFeed limit={8} />
+        <ActivityFeed limit={8} familyId={familyId} />
       </section>
     </div>
   );

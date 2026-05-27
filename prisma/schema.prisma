@@ -22,9 +22,19 @@ datasource db {
 
 // ─── Enums ──────────────────────────────────────────────────────────────────
 
+// LEGACY — kept only because some existing data references it. New code
+// authorizes against FamilyMember.role instead (per-family roles).
 enum Role {
   ADMIN
   USER
+}
+
+// Per-family role. `ADMIN` can manage members, invite, edit any task,
+// and approve/reject submissions. `MEMBER` can see family tasks and
+// work on their own.
+enum FamilyRole {
+  ADMIN
+  MEMBER
 }
 
 enum TaskStatus {
@@ -54,6 +64,13 @@ model User {
   passwordHash  String?
 
   role          Role      @default(USER)
+
+  // The user's currently-active family. They may belong to multiple
+  // families (FamilyMember rows), but only one is "active" at a time —
+  // all reads scope to it. Nullable for new signups before they create
+  // or join a family.
+  activeFamilyId String?
+  activeFamily   Family?  @relation("ActiveFamily", fields: [activeFamilyId], references: [id], onDelete: SetNull)
 
   // Family-app visual identity. Each member picks an emoji + a color,
   // shown as a "chip" on task cards, headers, and comments.
@@ -93,6 +110,8 @@ model User {
   shoppingChecked     ShoppingItem[]      @relation("CheckedShoppingItems")
   allowanceEntries    AllowanceEntry[]    @relation("UserAllowance")
   allowanceCreated    AllowanceEntry[]    @relation("CreatedAllowance")
+  familyMemberships   FamilyMember[]
+  invitesCreated      FamilyInvite[]      @relation("InviteCreator")
 
   @@index([role])
 }
@@ -146,6 +165,11 @@ model Task {
   priority    TaskPriority @default(MEDIUM)
   status      TaskStatus   @default(PENDING)
 
+  // Tenant key. Nullable in the schema for backfill compatibility, but
+  // server actions REQUIRE it to be set and matching session.activeFamilyId.
+  familyId    String?
+  family      Family?      @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
   assignedToId String
   assignedTo   User   @relation("AssignedTasks", fields: [assignedToId], references: [id], onDelete: Cascade)
 
@@ -196,10 +220,13 @@ model Task {
   @@index([status])
   @@index([dueDate])
   @@index([fromTemplateId])
+  @@index([familyId])
 }
 
 model TaskTemplate {
   id          String       @id @default(cuid())
+  familyId    String?
+  family      Family?      @relation(fields: [familyId], references: [id], onDelete: Cascade)
   // Display name in the admin's template list.
   name        String
   // Becomes the spawned Task's `title`.
@@ -234,6 +261,7 @@ model TaskTemplate {
   @@index([createdById])
   @@index([defaultAssigneeId])
   @@index([intervalDays, active])
+  @@index([familyId])
 }
 
 model TaskProofImage {
@@ -272,10 +300,77 @@ model PushSubscription {
   @@index([userId])
 }
 
+// ─── Multi-tenancy: Family + membership + invites ───────────────────────────
+//
+// Isolation model:
+//   - Every "owned" entity (Task, TaskTemplate, ShoppingItem,
+//     AllowanceEntry) has a `familyId` foreign key.
+//   - User belongs to ≥0 families via FamilyMember; User.activeFamilyId
+//     points to the family currently in scope for that user.
+//   - Every server action that reads or writes an owned entity MUST
+//     filter by `familyId === session.activeFamilyId` AND verify the
+//     session has a FamilyMember row for that family.
+//   - See src/lib/family.ts for the requireFamilyMember /
+//     requireFamilyAdmin helpers that enforce this.
+model Family {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members          FamilyMember[]
+  invites          FamilyInvite[]
+  activeForUsers   User[]            @relation("ActiveFamily")
+  tasks            Task[]
+  templates        TaskTemplate[]
+  shoppingItems    ShoppingItem[]
+  allowanceEntries AllowanceEntry[]
+}
+
+// One row per (User, Family) pairing. Drives both membership AND
+// role within that family. A user can be ADMIN of one family and
+// MEMBER of another.
+model FamilyMember {
+  id       String     @id @default(cuid())
+  familyId String
+  family   Family     @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role     FamilyRole @default(MEMBER)
+  joinedAt DateTime   @default(now())
+
+  @@unique([familyId, userId])
+  @@index([userId])
+}
+
+// Invite tokens. Admin generates one, shares the link, recipient signs
+// up (or signs in) and accepts. Single-use; expires after 7 days.
+model FamilyInvite {
+  id        String     @id @default(cuid())
+  familyId  String
+  family    Family     @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  // Random URL-safe token: /join/<token>
+  token     String     @unique
+  role      FamilyRole @default(MEMBER)
+  // Optional pre-fill email — informational only; we still verify ownership
+  // via the recipient's authenticated session at accept time.
+  email     String?
+  createdById String
+  createdBy   User     @relation("InviteCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  createdAt DateTime   @default(now())
+  expiresAt DateTime
+  usedAt    DateTime?
+  usedById  String?
+
+  @@index([familyId])
+}
+
 // Shared family shopping list. Any signed-in user can add or check
 // items; admins can also delete other people's items.
 model ShoppingItem {
   id          String    @id @default(cuid())
+  familyId    String?
+  family      Family?   @relation(fields: [familyId], references: [id], onDelete: Cascade)
   name        String
   // Optional free-text quantity ("2 boxes", "1L"). Kept free-form so a
   // family doesn't have to learn units.
@@ -290,6 +385,7 @@ model ShoppingItem {
 
   @@index([checkedAt])
   @@index([addedAt])
+  @@index([familyId])
 }
 
 // Allowance ledger: positive amounts = earned, negative = paid out.
@@ -297,6 +393,8 @@ model ShoppingItem {
 // only ones who create entries; users see their own running total.
 model AllowanceEntry {
   id          String   @id @default(cuid())
+  familyId    String?
+  family      Family?  @relation(fields: [familyId], references: [id], onDelete: Cascade)
   userId      String
   user        User     @relation("UserAllowance", fields: [userId], references: [id], onDelete: Cascade)
   amountCents Int
@@ -306,6 +404,7 @@ model AllowanceEntry {
   createdAt   DateTime @default(now())
 
   @@index([userId, createdAt])
+  @@index([familyId])
 }
 
 // Audit log: timestamped record of every state-changing event on a task.

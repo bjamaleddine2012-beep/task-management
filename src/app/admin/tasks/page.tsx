@@ -17,11 +17,17 @@ export default async function AdminTasksPage({
   searchParams: Promise<{ view?: string }>;
 }) {
   const session = await auth();
+  const familyId = session?.user?.activeFamilyId;
+  if (!familyId) {
+    // Proxy should have redirected, but bail safely if not.
+    return null;
+  }
   const { view: viewParam } = await searchParams;
   const view: View =
     viewParam === "kanban" || viewParam === "calendar" ? viewParam : "table";
   const [tasks, users] = await Promise.all([
     prisma.task.findMany({
+      where: { familyId },
       orderBy: [{ status: "asc" }, { dueDate: "asc" }],
       select: {
         id: true,
@@ -74,7 +80,9 @@ export default async function AdminTasksPage({
         },
       },
     }),
+    // Members of THIS family only — for assignee pickers etc.
     prisma.user.findMany({
+      where: { familyMemberships: { some: { familyId } } },
       orderBy: { name: "asc" },
       select: { id: true, name: true, email: true, role: true },
     }),
@@ -97,6 +105,7 @@ export default async function AdminTasksPage({
             fromTemplateId: t.fromTemplateId!,
             id: { not: t.id },
             status: "COMPLETED",
+            familyId, // family-scope the lookup
           },
           orderBy: { reviewedAt: "desc" },
           select: {

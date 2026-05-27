@@ -1,3 +1,4 @@
+import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import {
   Card,
@@ -15,10 +16,14 @@ export const dynamic = "force-dynamic";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export default async function AdminAnalyticsPage() {
+  const session = await auth();
+  const familyId = session?.user?.activeFamilyId;
+  if (!familyId) return null;
+
   const now = new Date();
   const last30Cutoff = new Date(now.getTime() - 30 * DAY_MS);
 
-  // Parallelize the read-only aggregations.
+  // Every aggregation below scopes to this family.
   const [
     totals,
     byStatus,
@@ -28,25 +33,31 @@ export default async function AdminAnalyticsPage() {
     perUser,
     avgReviewMs,
   ] = await Promise.all([
-    prisma.task.count(),
+    prisma.task.count({ where: { familyId } }),
     prisma.task.groupBy({
       by: ["status"],
+      where: { familyId },
       _count: { _all: true },
     }),
-    prisma.task.count({ where: { createdAt: { gte: last30Cutoff } } }),
+    prisma.task.count({
+      where: { familyId, createdAt: { gte: last30Cutoff } },
+    }),
     prisma.task.count({
       where: {
+        familyId,
         status: "COMPLETED",
         reviewedAt: { gte: last30Cutoff },
       },
     }),
     prisma.task.count({
       where: {
+        familyId,
         status: { not: "COMPLETED" },
         dueDate: { lt: now },
       },
     }),
     prisma.user.findMany({
+      where: { familyMemberships: { some: { familyId } } },
       orderBy: { name: "asc" },
       select: {
         id: true,
@@ -57,10 +68,11 @@ export default async function AdminAnalyticsPage() {
         points: true,
         _count: {
           select: {
-            assignedTasks: true,
+            assignedTasks: { where: { familyId } },
           },
         },
         assignedTasks: {
+          where: { familyId },
           select: {
             status: true,
             dueDate: true,
@@ -68,11 +80,13 @@ export default async function AdminAnalyticsPage() {
         },
       },
     }),
-    // Average review turnaround in ms (proofSubmittedAt → reviewedAt).
+    // Average review turnaround in ms — family-scoped via parameterized SQL.
     prisma.$queryRaw<Array<{ avg_ms: number | null }>>`
       SELECT EXTRACT(EPOCH FROM AVG("reviewedAt" - "proofSubmittedAt")) * 1000 AS avg_ms
       FROM "Task"
-      WHERE "reviewedAt" IS NOT NULL AND "proofSubmittedAt" IS NOT NULL
+      WHERE "reviewedAt" IS NOT NULL
+        AND "proofSubmittedAt" IS NOT NULL
+        AND "familyId" = ${familyId}
     `,
   ]);
 
@@ -97,7 +111,7 @@ export default async function AdminAnalyticsPage() {
       const overdue = tasks.filter(
         (t) => t.status !== "COMPLETED" && t.dueDate < now,
       ).length;
-      const streak = await getStreak(u.id);
+      const streak = await getStreak(u.id, familyId);
       return {
         id: u.id,
         name: u.name ?? u.email,

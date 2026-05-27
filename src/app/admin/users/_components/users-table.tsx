@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useActionState } from "react";
 import { Loader2, MoreHorizontal } from "lucide-react";
-import type { Role } from "@prisma/client";
+import type { FamilyRole } from "@prisma/client";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -43,7 +43,7 @@ export type AdminUserRow = {
   id: string;
   name: string | null;
   email: string;
-  role: Role;
+  role: FamilyRole;
   image: string | null;
   createdAtFormatted: string;
   hasPassword: boolean;
@@ -277,7 +277,7 @@ function EditUserDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="USER">User</SelectItem>
+                  <SelectItem value="MEMBER">Member</SelectItem>
                   <SelectItem value="ADMIN">Admin</SelectItem>
                 </SelectContent>
               </Select>

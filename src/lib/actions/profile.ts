@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import bcrypt from "bcryptjs";
 
 import { auth } from "@/auth";
+import { requireFamilyMember } from "@/lib/family";
 import { prisma } from "@/lib/prisma";
 import {
   addCommentSchema,
@@ -80,8 +81,8 @@ export async function addCommentAction(
   _prev: ProfileActionState,
   formData: FormData,
 ): Promise<ProfileActionState> {
-  const session = await auth();
-  if (!session?.user) return { ok: false, error: "Not authenticated" };
+  const gate = await requireFamilyMember();
+  if (!gate.ok) return { ok: false, error: gate.error };
 
   const parsed = addCommentSchema.safeParse({
     taskId: formData.get("taskId"),
@@ -95,8 +96,9 @@ export async function addCommentAction(
     };
   }
 
-  const task = await prisma.task.findUnique({
-    where: { id: parsed.data.taskId },
+  // Task lookup scoped to this family — silently misses for other families.
+  const task = await prisma.task.findFirst({
+    where: { id: parsed.data.taskId, familyId: gate.familyId },
     select: {
       id: true,
       title: true,
@@ -105,13 +107,12 @@ export async function addCommentAction(
   });
   if (!task) return { ok: false, error: "Task not found." };
 
-  // Permission: assignee or admin only.
-  if (
-    task.assignedToId !== session.user.id &&
-    session.user.role !== "ADMIN"
-  ) {
+  // Permission: assignee or family admin only.
+  if (task.assignedToId !== gate.session.user.id && gate.role !== "ADMIN") {
     return { ok: false, error: "You can't comment on this task." };
   }
+
+  const session = gate.session;
 
   await prisma.taskComment.create({
     data: {
@@ -126,7 +127,11 @@ export async function addCommentAction(
   //    a *targeted* push and is the only person we notify.
   // 2. If no mentions, fall back to the broadcast rule (assignee →
   //    admins, admin → assignee).
-  const mentioned = await resolveMentions(parsed.data.body, session.user.id);
+  const mentioned = await resolveMentions(
+    parsed.data.body,
+    session.user.id,
+    gate.familyId,
+  );
 
   const preview =
     parsed.data.body.length > 60
@@ -148,7 +153,7 @@ export async function addCommentAction(
   } else {
     const authorIsAssignee = task.assignedToId === session.user.id;
     if (authorIsAssignee) {
-      void notifyAdmins({
+      void notifyAdmins(gate.familyId, {
         title: `New comment on "${task.title}"`,
         body: `${authorName}: ${preview}`,
         url: "/admin/tasks",
@@ -169,26 +174,37 @@ export async function addCommentAction(
   return { ok: true };
 }
 
-// Parse "@name" patterns out of a comment body and return the matching
-// users. Tries first-token-of-name first, then full name, then email
-// local-part. Excludes the author so people don't self-mention.
+// Parse "@name" patterns out of a comment body and return matching
+// users from the SAME family. Tries first-token-of-name first, then full
+// name, then email local-part. Excludes the author. Scoping by familyId
+// here is what prevents cross-tenant @mentions.
 async function resolveMentions(
   body: string,
   authorId: string,
-): Promise<Array<{ id: string; name: string | null; role: "ADMIN" | "USER" }>> {
+  familyId: string,
+): Promise<Array<{ id: string; name: string | null; role: "ADMIN" | "MEMBER" }>> {
   // Up to 10 mentions per comment — anything beyond is spammy.
   const tokens = Array.from(body.matchAll(/@([A-Za-z0-9_.-]+)/g))
     .map((m) => m[1].toLowerCase())
     .slice(0, 10);
   if (tokens.length === 0) return [];
 
-  // Pull all users (the family scale is small enough; no need to be cute).
-  const users = await prisma.user.findMany({
-    where: { id: { not: authorId } },
-    select: { id: true, name: true, email: true, role: true },
+  // Pull family members (NOT all users). Family scale is small enough.
+  const members = await prisma.familyMember.findMany({
+    where: { familyId, userId: { not: authorId } },
+    select: {
+      role: true,
+      user: { select: { id: true, name: true, email: true } },
+    },
   });
+  const users = members.map((m) => ({
+    id: m.user.id,
+    name: m.user.name,
+    email: m.user.email,
+    role: m.role,
+  }));
 
-  const matched = new Map<string, { id: string; name: string | null; role: "ADMIN" | "USER" }>();
+  const matched = new Map<string, { id: string; name: string | null; role: "ADMIN" | "MEMBER" }>();
   for (const tok of tokens) {
     for (const u of users) {
       const firstName = (u.name ?? "").trim().split(/\s+/)[0]?.toLowerCase();

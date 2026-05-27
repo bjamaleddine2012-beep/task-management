@@ -39,13 +39,21 @@ export default async function ProfilePage() {
         createdAt: true,
       },
     }),
-    getUserStats(session.user.id),
+    getUserStats(session.user.id, session.user.activeFamilyId),
     prisma.allowanceEntry.aggregate({
-      where: { userId: session.user.id },
+      where: {
+        userId: session.user.id,
+        // Profile balance is scoped to the user's active family. If they
+        // belong to multiple families, each has its own balance.
+        familyId: session.user.activeFamilyId,
+      },
       _sum: { amountCents: true },
     }),
     prisma.allowanceEntry.findMany({
-      where: { userId: session.user.id },
+      where: {
+        userId: session.user.id,
+        familyId: session.user.activeFamilyId,
+      },
       orderBy: { createdAt: "desc" },
       take: 10,
       select: { id: true, amountCents: true, reason: true, createdAt: true },

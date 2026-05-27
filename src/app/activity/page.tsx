@@ -9,7 +9,10 @@ export default async function ActivityPage() {
   const session = await auth();
   if (!session?.user) redirect("/login?callbackUrl=/activity");
 
-  // Admins see everything; users see only activity touching their tasks.
+  const familyId = session.user.activeFamilyId;
+  if (!familyId) redirect("/onboarding");
+
+  // Admins see everything in the family; users see only their own slice.
   const scopedUserId =
     session.user.role === "ADMIN" ? undefined : session.user.id;
 
@@ -23,7 +26,7 @@ export default async function ActivityPage() {
             : "Everything happening across the family."}
         </p>
       </header>
-      <ActivityFeed limit={100} userId={scopedUserId} />
+      <ActivityFeed limit={100} familyId={familyId} userId={scopedUserId} />
     </div>
   );
 }

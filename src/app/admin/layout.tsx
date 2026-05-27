@@ -23,6 +23,7 @@ export default async function AdminLayout({
   return (
     <AdminShell
       email={session.user.email ?? ""}
+      familyName={session.user.activeFamilyName ?? "Family"}
       signOutAction={handleSignOut}
     >
       {children}

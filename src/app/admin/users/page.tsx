@@ -8,20 +8,38 @@ export const dynamic = "force-dynamic";
 export default async function UsersPage() {
   const session = await auth();
   const currentUserId = session?.user?.id ?? "";
+  const familyId = session?.user?.activeFamilyId;
+  if (!familyId) return null;
 
-  const users = await prisma.user.findMany({
-    orderBy: [{ role: "asc" }, { createdAt: "desc" }],
+  // List only users who are members of THIS family. The role shown is
+  // their FamilyMember.role, not the legacy User.role.
+  const members = await prisma.familyMember.findMany({
+    where: { familyId },
+    orderBy: [{ role: "asc" }, { joinedAt: "desc" }],
     select: {
-      id: true,
-      name: true,
-      email: true,
       role: true,
-      image: true,
-      createdAt: true,
-      passwordHash: true,
-      _count: { select: { assignedTasks: true } },
+      user: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          image: true,
+          createdAt: true,
+          passwordHash: true,
+          _count: {
+            select: {
+              assignedTasks: { where: { familyId } },
+            },
+          },
+        },
+      },
     },
   });
+  // Flatten to the shape the rest of the page expects.
+  const users = members.map((m) => ({
+    ...m.user,
+    role: m.role, // FamilyMember.role wins (ADMIN/MEMBER)
+  }));
 
   // Format the date on the server with an explicit locale so the client
   // doesn't re-format with a different locale and trip a hydration mismatch.

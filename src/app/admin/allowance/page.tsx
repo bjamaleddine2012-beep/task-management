@@ -1,3 +1,4 @@
+import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { centsToDollars } from "@/lib/validators/allowance";
 
@@ -6,7 +7,13 @@ import { AllowanceView } from "./_components/allowance-view";
 export const dynamic = "force-dynamic";
 
 export default async function AdminAllowancePage() {
+  const session = await auth();
+  const familyId = session?.user?.activeFamilyId;
+  if (!familyId) return null;
+
+  // Family members only, and only their allowance entries from this family.
   const users = await prisma.user.findMany({
+    where: { familyMemberships: { some: { familyId } } },
     orderBy: { name: "asc" },
     select: {
       id: true,
@@ -15,6 +22,7 @@ export default async function AdminAllowancePage() {
       avatarColor: true,
       avatarEmoji: true,
       allowanceEntries: {
+        where: { familyId },
         orderBy: { createdAt: "desc" },
         take: 20,
         select: {
