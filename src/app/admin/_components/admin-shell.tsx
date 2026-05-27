@@ -13,6 +13,7 @@ import {
   ListChecks,
   LogOut,
   Menu,
+  ShieldCheck,
   ShoppingCart,
   User,
   Users,
@@ -38,11 +39,13 @@ const NAV = [
 export function AdminShell({
   email,
   familyName,
+  isSuperAdmin,
   signOutAction,
   children,
 }: {
   email: string;
   familyName: string;
+  isSuperAdmin: boolean;
   signOutAction: () => Promise<void>;
   children: React.ReactNode;
 }) {
@@ -87,6 +90,7 @@ export function AdminShell({
         <SidebarInner
           email={email}
           familyName={familyName}
+          isSuperAdmin={isSuperAdmin}
           pathname={pathname}
           signOutAction={signOutAction}
         />
@@ -115,6 +119,7 @@ export function AdminShell({
             <SidebarInner
               email={email}
               familyName={familyName}
+              isSuperAdmin={isSuperAdmin}
               pathname={pathname}
               signOutAction={signOutAction}
             />
@@ -134,11 +139,13 @@ export function AdminShell({
 function SidebarInner({
   email,
   familyName,
+  isSuperAdmin,
   pathname,
   signOutAction,
 }: {
   email: string;
   familyName: string;
+  isSuperAdmin: boolean;
   pathname: string;
   signOutAction: () => Promise<void>;
 }) {
@@ -173,6 +180,27 @@ function SidebarInner({
             </Link>
           );
         })}
+
+        {/* Super-admin escape hatch — only rendered for the bootstrap
+            operator. Separated from NAV so it's visually distinct (it's
+            cross-tenant, not part of the current family's nav). */}
+        {isSuperAdmin && (
+          <>
+            <div className="mx-3 my-2 border-t" />
+            <Link
+              href="/superadmin"
+              className={cn(
+                "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
+                pathname.startsWith("/superadmin")
+                  ? "bg-accent text-accent-foreground font-medium"
+                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+              )}
+            >
+              <ShieldCheck className="h-4 w-4" />
+              Super-admin
+            </Link>
+          </>
+        )}
       </nav>
 
       <div className="border-t p-3">

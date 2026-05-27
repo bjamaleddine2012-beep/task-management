@@ -75,10 +75,14 @@ export default {
       const isLoggedIn = !!auth?.user;
       const role = auth?.user?.role;
       const activeFamilyId = auth?.user?.activeFamilyId;
+      const userEmail = auth?.user?.email?.toLowerCase();
+      const adminEmail = process.env.ADMIN_EMAIL?.toLowerCase();
+      const isSuperAdmin = !!adminEmail && userEmail === adminEmail;
       const path = nextUrl.pathname;
 
       const isOnLogin = path.startsWith("/login");
       const isOnAdmin = path.startsWith("/admin");
+      const isOnSuperAdmin = path.startsWith("/superadmin");
       const isOnOnboarding = path.startsWith("/onboarding");
       const isOnJoin = path.startsWith("/join/");
 
@@ -118,7 +122,14 @@ export default {
       // Multi-tenant gate: a signed-in user with no active family must
       // create or join one before doing anything else. /join/<token> and
       // /onboarding are the only paths that work without a family.
-      if (!activeFamilyId && !isOnOnboarding && !isOnJoin) {
+      // /superadmin is also exempt — it operates above the family system,
+      // so the super-admin shouldn't be forced through onboarding.
+      if (
+        !activeFamilyId &&
+        !isOnOnboarding &&
+        !isOnJoin &&
+        !isOnSuperAdmin
+      ) {
         return Response.redirect(new URL("/onboarding", nextUrl));
       }
       // If they DO have a family, keep them out of onboarding.
@@ -127,6 +138,13 @@ export default {
       }
 
       if (isOnAdmin && role !== "ADMIN") {
+        return Response.redirect(new URL("/", nextUrl));
+      }
+
+      // Defense in depth: /superadmin is gated by ADMIN_EMAIL match. The
+      // layout re-checks this, but proxying it here means non-matching
+      // users never even hit the layout's RSC render.
+      if (isOnSuperAdmin && !isSuperAdmin) {
         return Response.redirect(new URL("/", nextUrl));
       }
 

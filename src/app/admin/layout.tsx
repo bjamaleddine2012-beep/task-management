@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 
 import { auth, signOut } from "@/auth";
+import { isSuperAdminEmail } from "@/lib/superadmin";
 import { AdminShell } from "./_components/admin-shell";
 
 export default async function AdminLayout({
@@ -24,6 +25,7 @@ export default async function AdminLayout({
     <AdminShell
       email={session.user.email ?? ""}
       familyName={session.user.activeFamilyName ?? "Family"}
+      isSuperAdmin={isSuperAdminEmail(session.user.email)}
       signOutAction={handleSignOut}
     >
       {children}
