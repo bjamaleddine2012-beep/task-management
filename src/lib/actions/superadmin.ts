@@ -10,8 +10,13 @@ import { prisma } from "@/lib/prisma";
 import { requireSuperAdmin } from "@/lib/superadmin";
 import { sendWelcomeCredentialsEmail } from "@/lib/email";
 import {
+  addMemberSchema,
   deleteFamilySchema,
   provisionFamilySchema,
+  removeMemberSchema,
+  renameFamilySchema,
+  resetMemberPasswordSchema,
+  updateMemberSchema,
 } from "@/lib/validators/superadmin";
 
 const BCRYPT_ROUNDS = 12;
@@ -243,8 +248,76 @@ class ProvisionError extends Error {
   }
 }
 
-// ─── Regenerate one user's password ─────────────────────────────────────────
+// ─── Reset a user's password (family-scoped) ────────────────────────────────
+//
+// Always takes a familyId so the welcome email mentions the correct
+// family name (vs the user's *active* family, which may be different
+// when Bassem is managing one family while the user is currently in
+// another). Verifies membership before resetting — defense in depth.
 
+export async function resetMemberPasswordAction(
+  _prev: SuperAdminActionState,
+  formData: FormData,
+): Promise<SuperAdminActionState> {
+  const gate = await requireSuperAdmin();
+  if (!gate.ok) return { ok: false, error: gate.error };
+
+  const parsed = resetMemberPasswordSchema.safeParse({
+    familyId: formData.get("familyId"),
+    userId: formData.get("userId"),
+  });
+  if (!parsed.success) return { ok: false, error: "Missing ids." };
+
+  const membership = await prisma.familyMember.findUnique({
+    where: {
+      familyId_userId: { familyId: parsed.data.familyId, userId: parsed.data.userId },
+    },
+    select: {
+      family: { select: { name: true, id: true } },
+      user: { select: { id: true, email: true, name: true } },
+    },
+  });
+  if (!membership) {
+    return { ok: false, error: "User is not a member of that family." };
+  }
+
+  const password = generatePassword();
+  const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+  await prisma.user.update({
+    where: { id: membership.user.id },
+    data: { passwordHash },
+  });
+
+  const url = loginUrl();
+  const emailResult = await sendWelcomeCredentialsEmail({
+    to: membership.user.email,
+    name: membership.user.name ?? membership.user.email,
+    familyName: membership.family.name,
+    password,
+    loginUrl: url,
+  });
+
+  revalidatePath("/superadmin");
+  revalidatePath(`/superadmin/${membership.family.id}`);
+  return {
+    ok: true,
+    message: emailResult.sent
+      ? `New password emailed to ${membership.user.email}.`
+      : `Password reset. Email could not be sent — copy the password below.`,
+    familyId: membership.family.id,
+    loginUrl: url,
+    single: {
+      email: membership.user.email,
+      password,
+      emailSent: emailResult.sent,
+      emailError: emailResult.sent ? undefined : emailResult.reason,
+    },
+  };
+}
+
+// Back-compat alias: the families-list "Reset & resend" button used to
+// call regenerateCredentialsAction(userId). We map it through to the
+// family-scoped version by deriving familyId from the user's row.
 export async function regenerateCredentialsAction(
   _prev: SuperAdminActionState,
   formData: FormData,
@@ -253,56 +326,287 @@ export async function regenerateCredentialsAction(
   if (!gate.ok) return { ok: false, error: gate.error };
 
   const userId = String(formData.get("userId") ?? "");
+  const familyId = String(formData.get("familyId") ?? "");
   if (!userId) return { ok: false, error: "Missing user id." };
+
+  // If the caller already knows the family, forward straight to the
+  // family-scoped action. Otherwise infer from the user's activeFamily.
+  if (familyId) {
+    const fd = new FormData();
+    fd.set("familyId", familyId);
+    fd.set("userId", userId);
+    return resetMemberPasswordAction(null, fd);
+  }
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: {
-      id: true,
-      email: true,
-      name: true,
-      activeFamily: { select: { id: true, name: true } },
-    },
+    select: { activeFamilyId: true },
   });
-  if (!user) return { ok: false, error: "User not found." };
-  if (!user.activeFamily) {
+  if (!user?.activeFamilyId) {
     return {
       ok: false,
       error: "User has no active family — can't regenerate credentials.",
     };
   }
+  const fd = new FormData();
+  fd.set("familyId", user.activeFamilyId);
+  fd.set("userId", userId);
+  return resetMemberPasswordAction(null, fd);
+}
 
-  const password = generatePassword();
-  const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { passwordHash },
+// ─── Add ONE member to an existing family ───────────────────────────────────
+
+export async function addMemberAction(
+  _prev: SuperAdminActionState,
+  formData: FormData,
+): Promise<SuperAdminActionState> {
+  const gate = await requireSuperAdmin();
+  if (!gate.ok) return { ok: false, error: gate.error };
+
+  const parsed = addMemberSchema.safeParse({
+    familyId: formData.get("familyId"),
+    name: formData.get("name"),
+    email: formData.get("email"),
+    role: formData.get("role"),
+    password: formData.get("password") || "",
   });
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "Please fix the errors below.",
+      fieldErrors: flattenZodErrors(parsed.error),
+    };
+  }
+
+  const family = await prisma.family.findUnique({
+    where: { id: parsed.data.familyId },
+    select: { id: true, name: true },
+  });
+  if (!family) return { ok: false, error: "Family not found." };
+
+  const password = parsed.data.password ?? generatePassword();
+  const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const existing = await tx.user.findUnique({
+        where: { email: parsed.data.email },
+        select: { id: true },
+      });
+      if (existing) {
+        throw new ProvisionError("That email already has an account.", {
+          email: ["Email already in use"],
+        });
+      }
+      const user = await tx.user.create({
+        data: {
+          name: parsed.data.name,
+          email: parsed.data.email,
+          passwordHash,
+          role: parsed.data.role === "ADMIN" ? "ADMIN" : "USER",
+          activeFamilyId: family.id,
+        },
+      });
+      await tx.familyMember.create({
+        data: { familyId: family.id, userId: user.id, role: parsed.data.role },
+      });
+    });
+  } catch (err) {
+    if (err instanceof ProvisionError) {
+      return { ok: false, error: err.message, fieldErrors: err.fieldErrors };
+    }
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === "P2002"
+    ) {
+      return {
+        ok: false,
+        error: "That email is already in use.",
+        fieldErrors: { email: ["Already in use"] },
+      };
+    }
+    throw err;
+  }
 
   const url = loginUrl();
   const emailResult = await sendWelcomeCredentialsEmail({
-    to: user.email,
-    name: user.name ?? user.email,
-    familyName: user.activeFamily.name,
+    to: parsed.data.email,
+    name: parsed.data.name,
+    familyName: family.name,
     password,
     loginUrl: url,
   });
 
   revalidatePath("/superadmin");
+  revalidatePath(`/superadmin/${family.id}`);
   return {
     ok: true,
     message: emailResult.sent
-      ? `New password emailed to ${user.email}.`
-      : `Password reset. Email could not be sent — copy the password below.`,
-    familyId: user.activeFamily.id,
+      ? `Added ${parsed.data.name} and emailed credentials.`
+      : `Added ${parsed.data.name}. Email failed — copy the password below.`,
+    familyId: family.id,
     loginUrl: url,
     single: {
-      email: user.email,
+      email: parsed.data.email,
       password,
       emailSent: emailResult.sent,
       emailError: emailResult.sent ? undefined : emailResult.reason,
     },
   };
+}
+
+// ─── Update a member's name + role ──────────────────────────────────────────
+
+export async function updateMemberAction(
+  _prev: SuperAdminActionState,
+  formData: FormData,
+): Promise<SuperAdminActionState> {
+  const gate = await requireSuperAdmin();
+  if (!gate.ok) return { ok: false, error: gate.error };
+
+  const parsed = updateMemberSchema.safeParse({
+    familyId: formData.get("familyId"),
+    userId: formData.get("userId"),
+    name: formData.get("name") || undefined,
+    role: formData.get("role") || undefined,
+  });
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "Please fix the errors below.",
+      fieldErrors: flattenZodErrors(parsed.error),
+    };
+  }
+
+  const target = await prisma.familyMember.findUnique({
+    where: {
+      familyId_userId: { familyId: parsed.data.familyId, userId: parsed.data.userId },
+    },
+    select: { role: true },
+  });
+  if (!target) return { ok: false, error: "User is not in that family." };
+
+  // Last-admin guard: refuse to demote if they're the only admin left.
+  if (parsed.data.role === "MEMBER" && target.role === "ADMIN") {
+    const adminCount = await prisma.familyMember.count({
+      where: { familyId: parsed.data.familyId, role: "ADMIN" },
+    });
+    if (adminCount <= 1) {
+      return {
+        ok: false,
+        error:
+          "Can't demote the last admin. Promote someone else first, then demote.",
+      };
+    }
+  }
+
+  await prisma.$transaction(async (tx) => {
+    if (parsed.data.name !== undefined) {
+      await tx.user.update({
+        where: { id: parsed.data.userId },
+        data: { name: parsed.data.name },
+      });
+    }
+    if (parsed.data.role !== undefined) {
+      await tx.familyMember.update({
+        where: {
+          familyId_userId: {
+            familyId: parsed.data.familyId,
+            userId: parsed.data.userId,
+          },
+        },
+        data: { role: parsed.data.role },
+      });
+    }
+  });
+
+  revalidatePath("/superadmin");
+  revalidatePath(`/superadmin/${parsed.data.familyId}`);
+  return { ok: true, message: "Member updated." };
+}
+
+// ─── Remove a member from a family ──────────────────────────────────────────
+//
+// Removes the FamilyMember row only — User row stays (may belong to
+// other families; their authored history elsewhere should survive).
+// Clears their activeFamilyId if it pointed at this family.
+
+export async function removeMemberAction(
+  _prev: SuperAdminActionState,
+  formData: FormData,
+): Promise<SuperAdminActionState> {
+  const gate = await requireSuperAdmin();
+  if (!gate.ok) return { ok: false, error: gate.error };
+
+  const parsed = removeMemberSchema.safeParse({
+    familyId: formData.get("familyId"),
+    userId: formData.get("userId"),
+  });
+  if (!parsed.success) return { ok: false, error: "Missing ids." };
+
+  // Refuse to remove the last admin — would orphan the family.
+  const target = await prisma.familyMember.findUnique({
+    where: {
+      familyId_userId: { familyId: parsed.data.familyId, userId: parsed.data.userId },
+    },
+    select: { id: true, role: true },
+  });
+  if (!target) return { ok: false, error: "User is not in that family." };
+  if (target.role === "ADMIN") {
+    const adminCount = await prisma.familyMember.count({
+      where: { familyId: parsed.data.familyId, role: "ADMIN" },
+    });
+    if (adminCount <= 1) {
+      return {
+        ok: false,
+        error:
+          "Can't remove the last admin. Promote someone else to admin first.",
+      };
+    }
+  }
+
+  await prisma.$transaction([
+    prisma.familyMember.delete({ where: { id: target.id } }),
+    prisma.user.updateMany({
+      where: { id: parsed.data.userId, activeFamilyId: parsed.data.familyId },
+      data: { activeFamilyId: null },
+    }),
+  ]);
+
+  revalidatePath("/superadmin");
+  revalidatePath(`/superadmin/${parsed.data.familyId}`);
+  return { ok: true, message: "Member removed." };
+}
+
+// ─── Rename a family ────────────────────────────────────────────────────────
+
+export async function renameFamilyAction(
+  _prev: SuperAdminActionState,
+  formData: FormData,
+): Promise<SuperAdminActionState> {
+  const gate = await requireSuperAdmin();
+  if (!gate.ok) return { ok: false, error: gate.error };
+
+  const parsed = renameFamilySchema.safeParse({
+    familyId: formData.get("familyId"),
+    name: formData.get("name"),
+  });
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "Please fix the errors below.",
+      fieldErrors: flattenZodErrors(parsed.error),
+    };
+  }
+
+  await prisma.family.update({
+    where: { id: parsed.data.familyId },
+    data: { name: parsed.data.name },
+  });
+
+  revalidatePath("/superadmin");
+  revalidatePath(`/superadmin/${parsed.data.familyId}`);
+  return { ok: true, message: "Family renamed." };
 }
 
 // ─── Delete a family (everything inside it goes too) ────────────────────────
